@@ -1,0 +1,26 @@
+{
+  "name": "data-migration-tool",
+  "version": "1.0.0",
+  "description": "Web scraping tool using Playwright",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc",
+    "start": "ts-node src/index.ts",
+    "scrape": "ts-node src/scraper.ts",
+    "install:browsers": "npx playwright install chromium"
+  },
+  "repository": {
+    "type": "git",
+    "url": "http://local_proxy@127.0.0.1:43329/git/hamaguchishota-commits/data-migration-tool"
+  },
+  "keywords": ["playwright", "scraping", "automation"],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "@types/node": "^25.0.10",
+    "dotenv": "^17.2.3",
+    "playwright": "^1.58.0",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.9.3"
+  }
+}
