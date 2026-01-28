@@ -1290,7 +1290,7 @@ class KannaScraper {
   }
 
   // 帳票タブからデータをダウンロード（KANNA専用）
-  // 各行の「...」メニューから「Excelをダウンロード」を選択
+  // フォルダは一括ダウンロード不可→フォルダに入って個別ダウンロード
   async downloadForms(projectName: string): Promise<FolderItem[]> {
     if (!this.page) throw new Error('ブラウザが初期化されていません');
 
@@ -1318,58 +1318,116 @@ class KannaScraper {
       return [];
     }
 
-    const downloadedFiles: string[] = [];
+    const folders: FolderItem[] = [];
 
-    // 帳票行を取得（フォルダと個別ファイルの両方）
-    const formRows = await this.page.$$('table tbody tr');
-
-    if (formRows.length === 0) {
-      console.log('  帳票が見つかりません');
-      return [];
+    // ルートレベルの帳票ファイルをダウンロード
+    const rootFiles = await this.downloadFormsFromCurrentView(projectDir);
+    if (rootFiles.length > 0) {
+      folders.push({ name: 'root', files: rootFiles });
     }
 
-    console.log(`  ${formRows.length} 件の帳票を検出`);
+    // フォルダ一覧を取得
+    const folderNames: string[] = [];
+    const formRows = await this.page.$$('table tbody tr');
+
+    for (const row of formRows) {
+      // フォルダ行かどうか確認（入力率%がないのがフォルダ）
+      const rowInfo = await row.evaluate((el) => {
+        const cells = el.querySelectorAll('td');
+        const hasInputRate = Array.from(cells).some(cell => cell.textContent?.includes('%'));
+        const nameCell = el.querySelector('td:first-child a, td:first-child');
+        const name = nameCell?.textContent?.trim() || '';
+        return { isFolder: !hasInputRate, name };
+      });
+
+      if (rowInfo.isFolder && rowInfo.name) {
+        folderNames.push(rowInfo.name);
+      }
+    }
+
+    console.log(`  ${folderNames.length} 個のフォルダを検出`);
+
+    // 各フォルダに入ってダウンロード
+    for (const folderName of folderNames) {
+      console.log(`    フォルダ: ${folderName}`);
+
+      try {
+        // フォルダをクリック
+        const folderLink = this.page.locator(`table tbody tr:has-text("${folderName}") td:first-child`).first();
+        await folderLink.click();
+        await sleep(1500);
+
+        // フォルダ用ディレクトリ
+        const safeFolderName = this.sanitizeFilename(folderName);
+        const folderDir = path.join(projectDir, safeFolderName);
+        if (!fs.existsSync(folderDir)) {
+          fs.mkdirSync(folderDir, { recursive: true });
+        }
+
+        // フォルダ内の帳票をダウンロード
+        const folderFiles = await this.downloadFormsFromCurrentView(folderDir);
+        if (folderFiles.length > 0) {
+          folders.push({ name: safeFolderName, files: folderFiles });
+        }
+
+        // TOPに戻る
+        const topLink = await this.page.$('a:has-text("TOP"), [class*="breadcrumb"] a:first-child');
+        if (topLink) {
+          await topLink.click();
+        } else {
+          await formsTab.click();
+        }
+        await sleep(1000);
+
+      } catch (e) {
+        console.log(`      フォルダ処理エラー: ${e}`);
+        try {
+          await formsTab.click();
+          await sleep(500);
+        } catch {}
+      }
+    }
+
+    const totalFiles = folders.reduce((sum, f) => sum + f.files.length, 0);
+    console.log(`  帳票: ${folders.length} フォルダ, ${totalFiles} ファイル`);
+    return folders;
+  }
+
+  // 現在のビューから帳票ファイルをダウンロード
+  private async downloadFormsFromCurrentView(dir: string): Promise<string[]> {
+    if (!this.page) return [];
+
+    const downloadedFiles: string[] = [];
+    const formRows = await this.page.$$('table tbody tr');
 
     for (let i = 0; i < formRows.length; i++) {
       try {
-        // 再取得
         const currentRows = await this.page.$$('table tbody tr');
         if (i >= currentRows.length) break;
 
         const row = currentRows[i];
 
-        // 帳票名を取得
-        const formName = await row.evaluate((el) => {
-          const nameCell = el.querySelector('td:first-child a, td:first-child, [class*="name"]');
-          return nameCell?.textContent?.trim() || '';
-        });
-
-        // フォルダ行かどうか確認（フォルダアイコンまたは公開範囲列が「全体公開」など）
-        const isFolder = await row.evaluate((el) => {
-          // フォルダアイコンがあるか、または最初のセルにフォルダのスタイルがあるか
-          const hasFolder = el.querySelector('[class*="folder"]') !== null;
+        // ファイル行かどうか確認（入力率%があるのがファイル）
+        const rowInfo = await row.evaluate((el) => {
           const cells = el.querySelectorAll('td');
-          // 帳票ファイルは入力率(%)があるが、フォルダにはない
-          const hasInputRate = cells.length >= 5 && cells[4]?.textContent?.includes('%');
-          return hasFolder || !hasInputRate;
+          const hasInputRate = Array.from(cells).some(cell => cell.textContent?.includes('%'));
+          const nameCell = el.querySelector('td:first-child a, td:first-child');
+          const name = nameCell?.textContent?.trim() || '';
+          return { isFile: hasInputRate, name };
         });
 
-        if (isFolder) {
-          console.log(`    [${i + 1}/${formRows.length}] ${formName} (フォルダ、スキップ)`);
-          continue;
-        }
+        if (!rowInfo.isFile) continue;
 
-        console.log(`    [${i + 1}/${formRows.length}] ${formName}`);
+        console.log(`      [${i + 1}] ${rowInfo.name}`);
 
-        // 行の「...」メニューボタンをクリック
+        // 「...」メニューをクリック
         const menuBtn = await row.$('td:last-child button, td:last-child [class*="menu"], td:last-child');
 
         if (menuBtn) {
           await menuBtn.click();
           await sleep(500);
 
-          // 「Excelをダウンロード」メニュー項目をクリック
-          const downloadMenuItem = await this.page.$('[role="menuitem"]:has-text("Excelをダウンロード"), [role="menuitem"]:has-text("ダウンロード"), [role="menu"] :has-text("Excelをダウンロード"), [class*="menu"] :has-text("Excelをダウンロード"), button:has-text("Excelをダウンロード"), a:has-text("Excelをダウンロード")');
+          const downloadMenuItem = await this.page.$('[role="menuitem"]:has-text("Excelをダウンロード"), [role="menu"] :has-text("Excelをダウンロード"), [class*="menu"] :has-text("Excelをダウンロード"), button:has-text("Excelをダウンロード")');
 
           if (downloadMenuItem) {
             try {
@@ -1379,39 +1437,30 @@ class KannaScraper {
               ]);
 
               const suggestedName = download.suggestedFilename();
-              const safeFilename = this.sanitizeFilename(suggestedName || `${formName}.xlsx`);
-              const filepath = path.join(projectDir, safeFilename);
+              const safeFilename = this.sanitizeFilename(suggestedName || `${rowInfo.name}.xlsx`);
+              const filepath = path.join(dir, safeFilename);
               await download.saveAs(filepath);
               downloadedFiles.push(safeFilename);
-              console.log(`      ダウンロード完了: ${safeFilename}`);
+              console.log(`        ダウンロード完了: ${safeFilename}`);
             } catch {
-              console.log(`      ダウンロード失敗（タイムアウト）`);
+              console.log(`        ダウンロード失敗`);
               await this.page.keyboard.press('Escape');
             }
           } else {
-            console.log(`      ダウンロードメニューが見つかりません`);
             await this.page.keyboard.press('Escape');
           }
-        } else {
-          console.log(`      メニューボタンが見つかりません`);
         }
 
         await sleep(300);
 
       } catch (e) {
-        console.log(`    エラー: ${e}`);
+        console.log(`      エラー: ${e}`);
         await this.page.keyboard.press('Escape');
         await sleep(200);
       }
     }
 
-    const folders: FolderItem[] = [];
-    if (downloadedFiles.length > 0) {
-      folders.push({ name: 'forms', files: downloadedFiles });
-    }
-
-    console.log(`  帳票: ${downloadedFiles.length} ファイル`);
-    return folders;
+    return downloadedFiles;
   }
 
   // 写真台帳タブからデータをダウンロード
