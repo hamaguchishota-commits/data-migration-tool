@@ -817,57 +817,84 @@ class KannaScraper {
 
     const downloadedFiles: string[] = [];
 
-    const fileLinks = await this.page.$$('a[href*="download"], a[download], a[href$=".pdf"], a[href$=".doc"], a[href$=".docx"], a[href$=".xls"], a[href$=".xlsx"], .file-item a, .document-item a');
-    const downloadButtons = await this.page.$$('button:has-text("ダウンロード"), button[aria-label*="download"], .download-button');
+    // KANNA専用: リスト表示から資料をダウンロード
+    const fileRows = await this.page.$$('table tbody tr, [class*="list"] [class*="item"], [class*="row"]:has([class*="file"]), [class*="row"]:has([class*="document"])');
 
-    console.log(`      ${fileLinks.length} 個のファイルリンクを検出`);
+    if (fileRows.length > 0) {
+      console.log(`      ${fileRows.length} 件のファイルを検出（リスト表示）`);
 
-    for (const link of fileLinks) {
-      try {
-        const linkText = await link.textContent();
+      for (let i = 0; i < fileRows.length; i++) {
+        try {
+          // 再取得（SPAでDOM変わる可能性）
+          const currentRows = await this.page.$$('table tbody tr, [class*="list"] [class*="item"], [class*="row"]:has([class*="file"]), [class*="row"]:has([class*="document"])');
+          if (i >= currentRows.length) break;
 
-        const [download] = await Promise.all([
-          this.page.waitForEvent('download', { timeout: 10000 }),
-          link.click(),
-        ]);
+          const row = currentRows[i];
+          const fileName = await row.textContent();
+          console.log(`        [${i + 1}/${fileRows.length}] ${fileName?.trim().substring(0, 30)}...`);
 
-        const filename = download.suggestedFilename() || linkText?.trim() || `file_${downloadedFiles.length + 1}`;
-        const safeFilename = this.sanitizeFilename(filename);
-        const filepath = path.join(dir, safeFilename);
-        await download.saveAs(filepath);
-        downloadedFiles.push(safeFilename);
-        console.log(`        ダウンロード: ${safeFilename}`);
-      } catch {
-        const href = await link.getAttribute('href');
-        if (href) {
-          try {
-            const response = await this.page.request.get(href);
-            const buffer = await response.body();
-            const filename = `file_${downloadedFiles.length + 1}${this.getExtension(href, '')}`;
-            const filepath = path.join(dir, filename);
-            fs.writeFileSync(filepath, buffer);
-            downloadedFiles.push(filename);
-          } catch {
-            // スキップ
+          // 行をクリックして詳細/プレビューを開く
+          await row.click();
+          await sleep(1500);
+
+          // ダウンロードボタンを探してクリック
+          const downloadBtn = await this.page.$('button:has-text("ダウンロード"), a:has-text("ダウンロード"), [class*="download"], [aria-label*="download"]');
+
+          if (downloadBtn) {
+            try {
+              const [download] = await Promise.all([
+                this.page.waitForEvent('download', { timeout: 10000 }),
+                downloadBtn.click(),
+              ]);
+
+              const suggestedName = download.suggestedFilename();
+              const safeFilename = this.sanitizeFilename(suggestedName || `file_${i + 1}`);
+              const filepath = path.join(dir, safeFilename);
+              await download.saveAs(filepath);
+              downloadedFiles.push(safeFilename);
+              console.log(`        ダウンロード完了: ${safeFilename}`);
+            } catch (downloadError) {
+              console.log(`        ダウンロード失敗（タイムアウト）`);
+            }
           }
+
+          // 詳細画面を閉じる
+          const closeBtn = await this.page.$('button:has-text("閉じる"), button[aria-label="Close"], [class*="close"], button:has-text("×"), button:has-text("✕")');
+          if (closeBtn) {
+            await closeBtn.click();
+          } else {
+            await this.page.keyboard.press('Escape');
+          }
+          await sleep(500);
+
+        } catch (e) {
+          console.log(`        エラー: ${e}`);
         }
       }
-    }
+    } else {
+      // フォールバック: 従来の方法
+      const fileLinks = await this.page.$$('a[href*="download"], a[download], a[href$=".pdf"], a[href$=".doc"], a[href$=".docx"], a[href$=".xls"], a[href$=".xlsx"], .file-item a, .document-item a');
 
-    for (const btn of downloadButtons) {
-      try {
-        const [download] = await Promise.all([
-          this.page.waitForEvent('download', { timeout: 5000 }),
-          btn.click(),
-        ]);
+      console.log(`      ${fileLinks.length} 個のファイルリンクを検出（従来方式）`);
 
-        const filename = download.suggestedFilename() || `file_${downloadedFiles.length + 1}`;
-        const safeFilename = this.sanitizeFilename(filename);
-        const filepath = path.join(dir, safeFilename);
-        await download.saveAs(filepath);
-        downloadedFiles.push(safeFilename);
-      } catch {
-        // スキップ
+      for (const link of fileLinks) {
+        try {
+          const linkText = await link.textContent();
+
+          const [download] = await Promise.all([
+            this.page.waitForEvent('download', { timeout: 10000 }),
+            link.click(),
+          ]);
+
+          const filename = download.suggestedFilename() || linkText?.trim() || `file_${downloadedFiles.length + 1}`;
+          const safeFilename = this.sanitizeFilename(filename);
+          const filepath = path.join(dir, safeFilename);
+          await download.saveAs(filepath);
+          downloadedFiles.push(safeFilename);
+          console.log(`        ダウンロード: ${safeFilename}`);
+        } catch {
+          // スキップ
+        }
       }
     }
 
