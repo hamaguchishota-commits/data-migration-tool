@@ -440,22 +440,38 @@ class KannaScraper {
       scrollCount++;
     }
 
-    // 全行からデータを抽出
+    // 全行からデータを抽出（page.evaluateで一括取得）
     console.log('  案件データを抽出中...');
-    const rows = await this.page.$$('table tbody tr');
 
-    for (let i = 0; i < rows.length; i++) {
-      const row = rows[i];
-      const nameEl = await row.$('td:first-child a, td a:first-child');
-      if (!nameEl) continue;
+    const extractedData = await this.page.evaluate(() => {
+      const results: { name: string; href: string }[] = [];
+      const rows = document.querySelectorAll('table tbody tr');
 
-      const name = await nameEl.textContent();
-      const href = await nameEl.getAttribute('href');
+      rows.forEach((row) => {
+        // 最初のセル内のリンクを探す
+        const firstCell = row.querySelector('td');
+        if (!firstCell) return;
 
-      if (!name || !name.trim()) continue;
-      if (!href) continue; // URLがない行はスキップ
+        const link = firstCell.querySelector('a');
+        if (!link) return;
 
-      // URLで重複チェック（最も確実）
+        const name = link.textContent?.trim();
+        const href = link.getAttribute('href');
+
+        if (name && href) {
+          results.push({ name, href });
+        }
+      });
+
+      return results;
+    });
+
+    console.log(`  テーブルから ${extractedData.length} 件のリンクを検出`);
+
+    for (let i = 0; i < extractedData.length; i++) {
+      const { name, href } = extractedData[i];
+
+      // URLで重複チェック
       const fullUrl = href.startsWith('http') ? href : `https://kanna4u.com${href}`;
       if (seenUrls.has(fullUrl)) continue;
       seenUrls.add(fullUrl);
@@ -469,7 +485,7 @@ class KannaScraper {
 
       projects.push({
         id,
-        name: name.trim(),
+        name,
         url: fullUrl,
       });
     }
