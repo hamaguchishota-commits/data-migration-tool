@@ -75,25 +75,36 @@ class KannaScraper {
 
     console.log('左メニューの「案件一覧」をクリック...');
 
-    // 左メニューから「案件一覧」を探してクリック
+    // 緑のサイドバーから「案件一覧」テキストを探してクリック
     const menuSelectors = [
+      // 完全一致
+      'text=案件一覧',
+      // サイドバー内
+      'aside >> text=案件一覧',
+      '[class*="sidebar"] >> text=案件一覧',
+      '[class*="Sidebar"] >> text=案件一覧',
+      '[class*="side"] >> text=案件一覧',
+      '[class*="menu"] >> text=案件一覧',
+      '[class*="nav"] >> text=案件一覧',
+      // リンク・ボタン
       'a:has-text("案件一覧")',
       'button:has-text("案件一覧")',
-      '[role="menuitem"]:has-text("案件一覧")',
-      'nav a:has-text("案件")',
-      '.sidebar a:has-text("案件")',
-      '.menu a:has-text("案件")',
-      '[class*="menu"] a:has-text("案件")',
-      '[class*="nav"] a:has-text("案件")',
+      'div:has-text("案件一覧"):not(:has(div:has-text("案件一覧")))',
+      'span:has-text("案件一覧")',
     ];
 
     let clicked = false;
     for (const selector of menuSelectors) {
-      const menuItem = await this.page.$(selector);
-      if (menuItem) {
-        await menuItem.click();
-        clicked = true;
-        break;
+      try {
+        const menuItem = await this.page.$(selector);
+        if (menuItem) {
+          await menuItem.click();
+          clicked = true;
+          console.log(`  セレクタ "${selector}" でクリック成功`);
+          break;
+        }
+      } catch {
+        // セレクタが無効な場合はスキップ
       }
     }
 
@@ -116,33 +127,60 @@ class KannaScraper {
     while (hasNextPage) {
       console.log(`ページ ${pageNum} を取得中...`);
 
-      // 案件リストの各行を取得
-      const projectLinks = await this.page.$$('a[href*="/projects/"]');
+      // テーブルの各行から案件を取得
+      const rows = await this.page.$$('table tbody tr, [class*="table"] [class*="row"], [class*="list"] [class*="item"]');
 
-      for (const link of projectLinks) {
-        const href = await link.getAttribute('href');
-        const name = await link.textContent();
+      if (rows.length > 0) {
+        for (let i = 0; i < rows.length; i++) {
+          const row = rows[i];
+          // 行内のリンクまたはクリック可能な要素から案件名を取得
+          const nameEl = await row.$('a, [class*="name"], [class*="title"], td:first-child');
+          if (nameEl) {
+            const name = await nameEl.textContent();
+            const href = await nameEl.getAttribute('href');
 
-        if (href && name) {
-          const idMatch = href.match(/\/projects\/(\d+)/);
-          if (idMatch) {
-            const id = idMatch[1];
-            if (!projects.find(p => p.id === id)) {
-              projects.push({
-                id,
-                name: name.trim(),
-                url: `https://kanna4u.com${href}`,
-              });
+            if (name && name.trim()) {
+              // IDはhrefから取得、なければインデックスを使用
+              let id = `${pageNum}-${i}`;
+              if (href) {
+                const idMatch = href.match(/\/(\d+)/) || href.match(/id=(\d+)/);
+                if (idMatch) {
+                  id = idMatch[1];
+                }
+              }
+
+              if (!projects.find(p => p.name === name.trim())) {
+                projects.push({
+                  id,
+                  name: name.trim(),
+                  url: href ? `https://kanna4u.com${href}` : '',
+                });
+              }
             }
+          }
+        }
+      } else {
+        // テーブルがない場合、案件リンクを直接取得
+        const links = await this.page.$$('a[href*="project"], a[href*="cms"]');
+        for (const link of links) {
+          const name = await link.textContent();
+          const href = await link.getAttribute('href');
+          if (name && name.trim() && !projects.find(p => p.name === name.trim())) {
+            projects.push({
+              id: `link-${projects.length}`,
+              name: name.trim(),
+              url: href ? `https://kanna4u.com${href}` : '',
+            });
           }
         }
       }
 
       // 次のページがあるかチェック
-      const nextButton = await this.page.$('button:has-text("次"), a:has-text("次"), [aria-label="Next"], .pagination-next:not([disabled])');
+      const nextButton = await this.page.$('button:has-text("次"), a:has-text("次"), [aria-label="Next"], .pagination-next:not([disabled]), [class*="next"]:not([disabled])');
       if (nextButton) {
         const isDisabled = await nextButton.getAttribute('disabled');
-        if (!isDisabled) {
+        const ariaDisabled = await nextButton.getAttribute('aria-disabled');
+        if (!isDisabled && ariaDisabled !== 'true') {
           await nextButton.click();
           await this.page.waitForLoadState('networkidle');
           pageNum++;
@@ -178,12 +216,34 @@ class KannaScraper {
 
     console.log(`\n案件をクリック: ${project.name}`);
 
-    // 案件リンクを探してクリック
-    const projectLink = await this.page.$(`a[href*="/projects/${project.id}"]`);
-    if (projectLink) {
-      await projectLink.click();
-    } else {
+    // テーブル内から案件名を探してクリック
+    const selectors = [
+      // テーブル内のテキスト一致
+      `table >> text="${project.name}"`,
+      `tr >> text="${project.name}"`,
+      // リンクでの一致
+      `a:has-text("${project.name}")`,
+      // 部分一致
+      `text="${project.name}"`,
+    ];
+
+    let clicked = false;
+    for (const selector of selectors) {
+      try {
+        const element = await this.page.$(selector);
+        if (element) {
+          await element.click();
+          clicked = true;
+          break;
+        }
+      } catch {
+        // セレクタが無効な場合はスキップ
+      }
+    }
+
+    if (!clicked && project.url) {
       // リンクが見つからない場合はURLに直接遷移
+      console.log('  リンクが見つからないためURLに直接遷移');
       await this.page.goto(project.url);
     }
 
