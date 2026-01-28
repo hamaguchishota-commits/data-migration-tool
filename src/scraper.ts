@@ -282,6 +282,82 @@ class KannaScraper {
     } catch (e) {
       console.log(`  テンプレート選択エラー: ${e}`);
     }
+
+    // 「親案件」チェックボックスをオンにする
+    await this.checkParentProjectFilter();
+  }
+
+  // 「親案件」チェックボックスをオンにする
+  private async checkParentProjectFilter(): Promise<void> {
+    if (!this.page) return;
+
+    console.log('  「親案件」フィルターをオンにする...');
+
+    try {
+      // 親案件チェックボックスを探す（ラベルまたはinput要素）
+      const parentCheckboxLabel = this.page.locator('label:has-text("親案件"), span:has-text("親案件")').first();
+      const parentCheckboxInput = this.page.locator('input[type="checkbox"]').filter({ has: this.page.locator('xpath=..//text()[contains(., "親案件")]') });
+
+      // まずラベルをクリックしてみる
+      try {
+        const isVisible = await parentCheckboxLabel.isVisible({ timeout: 3000 });
+        if (isVisible) {
+          // チェックボックスの状態を確認
+          const checkbox = await this.page.$('input[type="checkbox"][name*="parent"], input[type="checkbox"][id*="parent"]');
+          let isChecked = false;
+
+          if (checkbox) {
+            isChecked = await checkbox.isChecked();
+          } else {
+            // aria-checked属性をチェック
+            const labelEl = await parentCheckboxLabel.elementHandle();
+            if (labelEl) {
+              const parentEl = await labelEl.$('xpath=..');
+              if (parentEl) {
+                const ariaChecked = await parentEl.getAttribute('aria-checked');
+                isChecked = ariaChecked === 'true';
+              }
+            }
+          }
+
+          if (!isChecked) {
+            await parentCheckboxLabel.click();
+            console.log('  「親案件」チェックボックスをオンにしました');
+            await sleep(1500); // リスト再読み込みを待機
+          } else {
+            console.log('  「親案件」チェックボックスは既にオン');
+          }
+          return;
+        }
+      } catch {
+        // ラベルが見つからない場合
+      }
+
+      // 直接チェックボックス要素を探す
+      const checkboxes = await this.page.$$('input[type="checkbox"]');
+      for (const checkbox of checkboxes) {
+        const parent = await checkbox.$('xpath=..');
+        if (parent) {
+          const text = await parent.textContent();
+          if (text && text.includes('親案件')) {
+            const isChecked = await checkbox.isChecked();
+            if (!isChecked) {
+              await checkbox.click();
+              console.log('  「親案件」チェックボックスをオンにしました');
+              await sleep(1500);
+            } else {
+              console.log('  「親案件」チェックボックスは既にオン');
+            }
+            return;
+          }
+        }
+      }
+
+      console.log('  「親案件」チェックボックスが見つかりません');
+
+    } catch (e) {
+      console.log(`  親案件フィルターエラー: ${e}`);
+    }
   }
 
   // 案件一覧から全案件の情報を取得（無限スクロール対応）
