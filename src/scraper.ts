@@ -1463,7 +1463,8 @@ class KannaScraper {
     return downloadedFiles;
   }
 
-  // 写真台帳タブからデータをダウンロード
+  // 写真台帳タブからデータをダウンロード（KANNA専用）
+  // 各行のPDFボタンをクリックしてダウンロード
   async downloadPhotoLedger(projectName: string): Promise<FolderItem[]> {
     if (!this.page) throw new Error('ブラウザが初期化されていません');
 
@@ -1491,38 +1492,69 @@ class KannaScraper {
       return [];
     }
 
-    const folders: FolderItem[] = [];
+    const downloadedFiles: string[] = [];
 
-    // ダウンロードボタンがあるか確認（一括ダウンロード）
-    const bulkDownloadBtn = await this.page.$('button:has-text("一括ダウンロード"), button:has-text("全てダウンロード"), a:has-text("ダウンロード"), button:has-text("PDF"), button:has-text("出力")');
+    // 写真台帳一覧の行を取得
+    const ledgerRows = await this.page.$$('table tbody tr');
 
-    if (bulkDownloadBtn) {
+    if (ledgerRows.length === 0) {
+      console.log('  写真台帳が見つかりません');
+      return [];
+    }
+
+    console.log(`  ${ledgerRows.length} 件の写真台帳を検出`);
+
+    for (let i = 0; i < ledgerRows.length; i++) {
       try {
-        console.log('    一括ダウンロードボタンを検出');
-        const [download] = await Promise.all([
-          this.page.waitForEvent('download', { timeout: 30000 }),
-          bulkDownloadBtn.click(),
-        ]);
+        const currentRows = await this.page.$$('table tbody tr');
+        if (i >= currentRows.length) break;
 
-        const suggestedName = download.suggestedFilename();
-        const safeFilename = this.sanitizeFilename(suggestedName || 'photo_ledger.pdf');
-        const filepath = path.join(projectDir, safeFilename);
-        await download.saveAs(filepath);
-        folders.push({ name: 'photo_ledger', files: [safeFilename] });
-        console.log(`    ダウンロード完了: ${safeFilename}`);
-      } catch {
-        console.log('    一括ダウンロード失敗');
-      }
-    } else {
-      // リスト形式の場合
-      const files = await this.downloadFilesFromCurrentView(projectDir, 'photo_ledger');
-      if (files.length > 0) {
-        folders.push({ name: 'photo_ledger', files });
+        const row = currentRows[i];
+
+        // 写真台帳名を取得
+        const ledgerName = await row.evaluate((el) => {
+          const nameCell = el.querySelector('td:first-child a, td:first-child');
+          return nameCell?.textContent?.trim() || '';
+        });
+
+        console.log(`    [${i + 1}/${ledgerRows.length}] ${ledgerName}`);
+
+        // PDFボタンをクリック
+        const pdfBtn = await row.$('button:has-text("PDF"), a:has-text("PDF"), [class*="pdf"]');
+
+        if (pdfBtn) {
+          try {
+            const [download] = await Promise.all([
+              this.page.waitForEvent('download', { timeout: 30000 }),
+              pdfBtn.click(),
+            ]);
+
+            const suggestedName = download.suggestedFilename();
+            const safeFilename = this.sanitizeFilename(suggestedName || `${ledgerName}.pdf`);
+            const filepath = path.join(projectDir, safeFilename);
+            await download.saveAs(filepath);
+            downloadedFiles.push(safeFilename);
+            console.log(`      ダウンロード完了: ${safeFilename}`);
+          } catch {
+            console.log(`      ダウンロード失敗（タイムアウト）`);
+          }
+        } else {
+          console.log(`      PDFボタンが見つかりません`);
+        }
+
+        await sleep(300);
+
+      } catch (e) {
+        console.log(`    エラー: ${e}`);
       }
     }
 
-    const totalFiles = folders.reduce((sum, f) => sum + f.files.length, 0);
-    console.log(`  写真台帳: ${totalFiles} ファイル`);
+    const folders: FolderItem[] = [];
+    if (downloadedFiles.length > 0) {
+      folders.push({ name: 'photo_ledger', files: downloadedFiles });
+    }
+
+    console.log(`  写真台帳: ${downloadedFiles.length} ファイル`);
     return folders;
   }
 
