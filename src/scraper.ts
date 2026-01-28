@@ -1017,7 +1017,7 @@ class KannaScraper {
           });
 
           // カード情報と詳細情報をマージ
-          const reportData = { index: i + 1, ...cardData, ...detailData };
+          const reportData: { [key: string]: any } = { index: i + 1, ...cardData, ...detailData };
 
           // 写真をダウンロード
           const downloadedPhotos: string[] = [];
