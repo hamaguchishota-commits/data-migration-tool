@@ -5,6 +5,10 @@ import * as path from 'path';
 
 const KANNA_LOGIN_URL = 'https://kanna4u.com/signin';
 const DOWNLOAD_DIR = './downloads';
+const SCREENSHOT_DIR = './screenshots';
+
+// ヘルパー: 指定秒数待機
+const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
 export interface Project {
   id: string;
@@ -32,20 +36,51 @@ class KannaScraper {
     this.browser = await chromium.launch({
       headless: config.headless,
       slowMo: config.slowMo,
+      args: [
+        '--disable-blink-features=AutomationControlled',
+        '--disable-features=IsolateOrigins,site-per-process',
+        '--no-sandbox',
+      ],
     });
+
+    // Stealth mode: 人間らしいブラウザ設定
     this.context = await this.browser.newContext({
       viewport: { width: 1280, height: 720 },
       acceptDownloads: true,
+      userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+      locale: 'ja-JP',
+      timezoneId: 'Asia/Tokyo',
     });
+
     this.page = await this.context.newPage();
+
+    // Stealth mode: webdriver検出を回避
+    await this.page.addInitScript(() => {
+      Object.defineProperty(navigator, 'webdriver', { get: () => false });
+      Object.defineProperty(navigator, 'languages', { get: () => ['ja-JP', 'ja', 'en-US', 'en'] });
+      Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });
+    });
+
     this.page.setDefaultTimeout(config.actionTimeout);
     this.page.setDefaultNavigationTimeout(config.navigationTimeout);
-    console.log('ブラウザ起動完了');
+    console.log('ブラウザ起動完了（Stealth mode有効）');
 
-    // ダウンロードディレクトリを作成
+    // ディレクトリを作成
     if (!fs.existsSync(DOWNLOAD_DIR)) {
       fs.mkdirSync(DOWNLOAD_DIR, { recursive: true });
     }
+    if (!fs.existsSync(SCREENSHOT_DIR)) {
+      fs.mkdirSync(SCREENSHOT_DIR, { recursive: true });
+    }
+  }
+
+  // スクリーンショットを保存
+  async saveScreenshot(name: string): Promise<void> {
+    if (!this.page) return;
+    const filename = `${name}_${Date.now()}.png`;
+    const filepath = path.join(SCREENSHOT_DIR, filename);
+    await this.page.screenshot({ path: filepath, fullPage: true });
+    console.log(`  スクリーンショット保存: ${filepath}`);
   }
 
   async login(): Promise<boolean> {
@@ -53,6 +88,9 @@ class KannaScraper {
 
     console.log(`ログインページにアクセス: ${KANNA_LOGIN_URL}`);
     await this.page.goto(KANNA_LOGIN_URL);
+
+    // ページ読み込み後少し待機
+    await sleep(1000);
 
     console.log('メールアドレスを入力中...');
     await this.page.fill('input[type="email"]', config.kannaEmail);
@@ -65,6 +103,13 @@ class KannaScraper {
 
     await this.page.waitForLoadState('networkidle');
 
+    // ログイン後、5秒待機（ページ完全読み込みとbot検出回避）
+    console.log('ログイン後、5秒待機中...');
+    await sleep(5000);
+
+    // デバッグ用スクリーンショット
+    await this.saveScreenshot('after_login');
+
     console.log('ログイン完了');
     return true;
   }
@@ -74,6 +119,13 @@ class KannaScraper {
     if (!this.page) throw new Error('ブラウザが初期化されていません');
 
     console.log('左メニューの「案件一覧」をクリック...');
+
+    // クリック前のスクリーンショット
+    await this.saveScreenshot('before_click_menu');
+
+    // 現在のページのHTMLを確認（デバッグ用）
+    const currentUrl = this.page.url();
+    console.log(`  現在のURL: ${currentUrl}`);
 
     // 緑のサイドバーから「案件一覧」テキストを探してクリック
     const menuSelectors = [
@@ -91,28 +143,45 @@ class KannaScraper {
       'button:has-text("案件一覧")',
       'div:has-text("案件一覧"):not(:has(div:has-text("案件一覧")))',
       'span:has-text("案件一覧")',
+      // XPath風の検索（テキスト内容で検索）
+      ':text("案件一覧")',
     ];
 
     let clicked = false;
     for (const selector of menuSelectors) {
       try {
+        console.log(`  セレクタを試行: ${selector}`);
         const menuItem = await this.page.$(selector);
         if (menuItem) {
-          await menuItem.click();
-          clicked = true;
-          console.log(`  セレクタ "${selector}" でクリック成功`);
-          break;
+          // 要素が表示されているか確認
+          const isVisible = await menuItem.isVisible();
+          if (isVisible) {
+            await menuItem.click();
+            clicked = true;
+            console.log(`  セレクタ "${selector}" でクリック成功`);
+            break;
+          } else {
+            console.log(`  要素は見つかったが非表示: ${selector}`);
+          }
         }
-      } catch {
+      } catch (e) {
         // セレクタが無効な場合はスキップ
+        console.log(`  セレクタ失敗: ${selector}`);
       }
     }
 
     if (!clicked) {
-      throw new Error('左メニューの「案件一覧」が見つかりません');
+      // エラー時のスクリーンショット
+      await this.saveScreenshot('error_menu_not_found');
+      throw new Error('左メニューの「案件一覧」が見つかりません。スクリーンショットを確認してください。');
     }
 
     await this.page.waitForLoadState('networkidle');
+    await sleep(2000); // 遷移後に少し待機
+
+    // 遷移後のスクリーンショット
+    await this.saveScreenshot('after_click_menu');
+
     console.log('案件一覧ページに遷移しました');
   }
 
