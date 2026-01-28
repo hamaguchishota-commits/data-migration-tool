@@ -557,23 +557,83 @@ class KannaScraper {
     }
   }
 
+  // KANNA AIチャットボットを閉じる
+  private async closeKannaAIChat(): Promise<void> {
+    if (!this.page) return;
+
+    try {
+      // チャットボットのクローズボタンを探す
+      const closeSelectors = [
+        '[class*="chat"] button[aria-label*="close"]',
+        '[class*="chat"] button[aria-label*="Close"]',
+        '[class*="Chat"] [class*="close"]',
+        '[class*="ai"] [class*="close"]',
+        '[class*="assistant"] [class*="close"]',
+        'button:has-text("×")',
+        'button:has-text("✕")',
+      ];
+
+      for (const selector of closeSelectors) {
+        const closeBtn = this.page.locator(selector).first();
+        try {
+          const isVisible = await closeBtn.isVisible({ timeout: 500 });
+          if (isVisible) {
+            await closeBtn.click();
+            console.log('  KANNA AIチャットを閉じました');
+            await sleep(300);
+            return;
+          }
+        } catch {
+          continue;
+        }
+      }
+
+      // ESCキーでも閉じてみる
+      await this.page.keyboard.press('Escape');
+      await sleep(200);
+
+    } catch {
+      // チャットがない場合は何もしない
+    }
+  }
+
   // 概要タブの全項目を自動検出して取得（会社ごとの設定に対応）
   async getProjectDetails(): Promise<ProjectDetail> {
     if (!this.page) throw new Error('ブラウザが初期化されていません');
 
+    // KANNA AIチャットボットを閉じる（存在する場合）
+    await this.closeKannaAIChat();
+
     console.log('  概要タブを開く...');
 
-    // 概要タブを探してクリック
-    const overviewTab = this.page.locator('button:has-text("概要"), a:has-text("概要"), [role="tab"]:has-text("概要")').first();
-
+    // 概要タブを探してクリック（複数のセレクタを試す）
     try {
-      const isVisible = await overviewTab.isVisible();
-      if (isVisible) {
-        await overviewTab.click();
-        await sleep(1500);
+      // タブはページ上部にある横並びのボタン/リンク
+      const tabSelectors = [
+        '[role="tab"]:has-text("概要")',
+        '[role="tablist"] button:has-text("概要")',
+        '[role="tablist"] a:has-text("概要")',
+        'button[aria-selected]:has-text("概要")',
+        'nav button:has-text("概要")',
+        'nav a:has-text("概要")',
+      ];
+
+      for (const selector of tabSelectors) {
+        const tab = this.page.locator(selector).first();
+        try {
+          const isVisible = await tab.isVisible({ timeout: 1000 });
+          if (isVisible) {
+            await tab.click();
+            await sleep(1000);
+            console.log('  概要タブをクリック');
+            break;
+          }
+        } catch {
+          continue;
+        }
       }
     } catch {
-      // 概要タブがない場合はスキップ
+      // 概要タブがない場合や既に選択されている場合はスキップ
     }
 
     // デバッグ用スクリーンショット
@@ -583,18 +643,30 @@ class KannaScraper {
     const extractedData = await this.page.evaluate(() => {
       const result: { [key: string]: string } = {};
 
-      // 除外するテキスト（UI要素、タブ名など）
-      const excludeTexts = [
-        '概要', '関連案件', '工程表', 'タスク', '報告', '写真', '資料', '帳票', '写真台帳', '担当',
-        '案件情報', '物件情報', '施工に関する注意点', '顧客情報',
-        '編集する', 'チャット開始', 'ビュー表示', '詳細検索', '表示設定',
-        'KANNA', 'AIベータ版', 'こんにちは', '案件作成', '案件ボード', '案件カレンダー',
-        '顧客一覧', '物件一覧', 'エクスポート', '設定', 'メンバー管理', '料金プラン',
-        'お問い合わせ', '運営からのお知らせ', 'よくあるご質問', '操作マニュアル', '利用規約', 'プライバシーポリシー',
-        '案件概要をCSVでダウンロード'
+      // KANNA AIチャットボックスを除外（classに'chat'や'ai'を含む要素を無視）
+      const excludeSelectors = [
+        '[class*="chat"]', '[class*="Chat"]',
+        '[class*="ai-"]', '[class*="AI"]',
+        '[class*="assistant"]', '[class*="bot"]',
+        '[class*="modal"]', '[class*="popup"]', '[class*="overlay"]',
+        '[class*="sidebar"]', '[class*="Sidebar"]', 'aside', 'nav'
       ];
 
-      // 概要ページの既知のフィールドラベル（これらを探す）
+      // 除外する親要素を持つか確認する関数
+      const isInExcludedArea = (el: Element): boolean => {
+        let current: Element | null = el;
+        while (current) {
+          for (const selector of excludeSelectors) {
+            if (current.matches && current.matches(selector)) {
+              return true;
+            }
+          }
+          current = current.parentElement;
+        }
+        return false;
+      };
+
+      // 概要ページの既知のフィールドラベル
       const knownLabels = [
         '案件名', '開始日', '終了日', '案件テンプレート', '案件フロー', '備考', '親案件',
         '物件名', '住所',
@@ -602,45 +674,32 @@ class KannaScraper {
         '区分', '氏名', '氏名(フリガナ)', '会社名または屋号名', '会社名または屋号名(フリガナ)', '担当者名', '電話番号1', '電話番号2', 'メールアドレス'
       ];
 
-      // メインコンテンツエリアを特定（サイドバーを除外）
-      // KANNAの構造: サイドバーは左側、メインコンテンツは右側
-      const mainContent = document.querySelector('main, [role="main"], [class*="content"], [class*="main"]')
-                        || document.body;
+      // 既知のラベルを含む要素を直接探す
+      knownLabels.forEach(label => {
+        // ラベルテキストを含む要素を探す
+        const xpath = `//*[contains(text(), '${label}')]`;
+        const labelElements = document.evaluate(xpath, document, null, XPathResult.ORDERED_NODE_SNAPSHOT_TYPE, null);
 
-      // ラベルと値のペアを探す
-      // パターン: 同じ行にラベル（短いテキスト）と値がある
-      const allElements = mainContent.querySelectorAll('*');
-      const processedTexts = new Set<string>();
+        for (let i = 0; i < labelElements.snapshotLength; i++) {
+          const labelEl = labelElements.snapshotItem(i) as Element;
+          if (!labelEl || isInExcludedArea(labelEl)) continue;
 
-      allElements.forEach(el => {
-        const children = Array.from(el.children);
+          // ラベルの次の兄弟要素または親の次の子要素から値を取得
+          const parent = labelEl.parentElement;
+          if (!parent) continue;
 
-        // 直接の子要素が2〜3個で、最初が短いテキスト（ラベル）の場合
-        if (children.length >= 2 && children.length <= 4) {
-          const firstChild = children[0];
-          const secondChild = children[1];
+          const siblings = Array.from(parent.children);
+          const labelIndex = siblings.indexOf(labelEl);
 
-          const labelText = firstChild.textContent?.trim().replace(/[:：]$/, '') || '';
-          let valueText = secondChild.textContent?.trim() || '';
-
-          // ラベルが既知のフィールドか、または短いテキストでUI要素でない
-          const isKnownLabel = knownLabels.includes(labelText);
-          const isValidLabel = labelText.length > 0 && labelText.length < 30 &&
-                              !excludeTexts.some(ex => labelText.includes(ex)) &&
-                              !labelText.includes('件') && // "277件" のような表示を除外
-                              !/^\d+$/.test(labelText); // 数字のみは除外
-
-          if ((isKnownLabel || isValidLabel) && !processedTexts.has(labelText) && !result[labelText]) {
-            // 値が「-」や空の場合
-            if (valueText === '-' || valueText === '') {
-              valueText = '';
-            }
-            // 値がラベルと同じ場合はスキップ（誤検出）
-            if (valueText !== labelText && !excludeTexts.includes(valueText)) {
-              // 値が長すぎる場合は誤検出の可能性
-              if (valueText.length < 200) {
-                result[labelText] = valueText;
-                processedTexts.add(labelText);
+          // 次の兄弟要素を値として取得
+          if (labelIndex >= 0 && labelIndex < siblings.length - 1) {
+            const valueEl = siblings[labelIndex + 1];
+            if (valueEl) {
+              const valueText = valueEl.textContent?.trim() || '';
+              if (valueText && valueText !== '-' && valueText !== label && !result[label]) {
+                result[label] = valueText;
+              } else if (valueText === '-' && !result[label]) {
+                result[label] = '';
               }
             }
           }
