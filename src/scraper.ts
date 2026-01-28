@@ -1582,76 +1582,133 @@ class KannaScraper {
       return [];
     }
 
-    // 担当者データを抽出
+    // 担当者データを抽出（カード形式：名前、会社|役割、電話番号）
     const staffData = await this.page.evaluate(() => {
       const items: any[] = [];
 
-      // テーブル形式
-      const tables = document.querySelectorAll('table');
-      tables.forEach(table => {
-        const headers: string[] = [];
-        const headerCells = table.querySelectorAll('thead th, thead td, tr:first-child th, tr:first-child td');
-        headerCells.forEach(cell => {
-          headers.push(cell.textContent?.trim() || '');
-        });
+      // カード形式の担当者一覧を探す
+      // 各カードは複数のテキスト行を持つ（名前、会社|役割、電話番号）
 
-        const rows = table.querySelectorAll('tbody tr, tr:not(:first-child)');
-        rows.forEach(row => {
-          const item: { [key: string]: string } = {};
-          const cells = row.querySelectorAll('td, th');
-          cells.forEach((cell, idx) => {
-            const key = headers[idx] || `column_${idx}`;
-            item[key] = cell.textContent?.trim() || '';
-          });
-          if (Object.keys(item).length > 0 && Object.values(item).some(v => v)) {
-            items.push(item);
-          }
-        });
-      });
+      // 電話番号のパターン
+      const phonePattern = /^[0-9\-（）()]+$/;
+      // 会社|役割のパターン
+      const companyRolePattern = /[｜|]/;
 
-      // リスト/カード形式
-      const listItems = document.querySelectorAll('[class*="list"] [class*="item"], [class*="user"], [class*="member"], [class*="staff"], [class*="card"]');
-      listItems.forEach(item => {
+      // まず、カード/リストアイテムを探す
+      const cardSelectors = [
+        '[class*="card"]',
+        '[class*="member"]',
+        '[class*="staff"]',
+        '[class*="user-item"]',
+        '[class*="list-item"]',
+        'li[class*="item"]',
+        // divベースのカード
+        'div[class*="item"]',
+      ];
+
+      let cards: Element[] = [];
+      for (const selector of cardSelectors) {
+        const found = document.querySelectorAll(selector);
+        if (found.length > 0) {
+          cards = Array.from(found);
+          break;
+        }
+      }
+
+      // カードが見つからない場合、担当一覧の子要素を探す
+      if (cards.length === 0) {
+        const container = document.querySelector('[class*="list"], [class*="members"], [class*="staff"]');
+        if (container) {
+          cards = Array.from(container.children);
+        }
+      }
+
+      // 各カードからデータを抽出
+      cards.forEach(card => {
         const staff: { [key: string]: string } = {};
 
-        const name = item.querySelector('[class*="name"]')?.textContent?.trim();
-        if (name) staff['名前'] = name;
+        // カード内の全テキストノードを取得
+        const textNodes: string[] = [];
+        const walk = (node: Node) => {
+          if (node.nodeType === Node.TEXT_NODE) {
+            const text = node.textContent?.trim();
+            if (text && text.length > 0) {
+              textNodes.push(text);
+            }
+          } else if (node.nodeType === Node.ELEMENT_NODE) {
+            // 不要な要素はスキップ（アイコン、ボタンなど）
+            const el = node as Element;
+            const tagName = el.tagName.toLowerCase();
+            if (tagName === 'svg' || tagName === 'img' || tagName === 'button') {
+              return;
+            }
+            node.childNodes.forEach(child => walk(child));
+          }
+        };
+        walk(card);
 
-        const role = item.querySelector('[class*="role"], [class*="position"]')?.textContent?.trim();
-        if (role) staff['役割'] = role;
+        // 重複を除去してユニークなテキストを取得
+        const uniqueTexts = [...new Set(textNodes)].filter(t => t.length > 0);
 
-        const email = item.querySelector('[class*="email"], a[href^="mailto:"]')?.textContent?.trim();
-        if (email) staff['メール'] = email;
+        // テキストを分類
+        uniqueTexts.forEach(text => {
+          if (phonePattern.test(text.replace(/\s/g, ''))) {
+            // 電話番号
+            staff['電話番号'] = text;
+          } else if (companyRolePattern.test(text)) {
+            // 会社|役割 形式
+            const parts = text.split(/[｜|]/);
+            if (parts.length >= 2) {
+              staff['会社'] = parts[0].trim();
+              staff['役割'] = parts[1].trim();
+            } else {
+              staff['会社・役割'] = text;
+            }
+          } else if (!staff['名前'] && text.length > 0 && text.length < 30) {
+            // 最初の短いテキストを名前として扱う
+            staff['名前'] = text;
+          }
+        });
 
-        const phone = item.querySelector('[class*="phone"], [class*="tel"]')?.textContent?.trim();
-        if (phone) staff['電話'] = phone;
-
-        const company = item.querySelector('[class*="company"], [class*="organization"]')?.textContent?.trim();
-        if (company) staff['会社'] = company;
-
-        // フォールバック: テキスト全体
-        if (Object.keys(staff).length === 0) {
-          const text = item.textContent?.trim();
-          if (text) staff['内容'] = text;
-        }
-
-        if (Object.keys(staff).length > 0 && !items.find(i => JSON.stringify(i) === JSON.stringify(staff))) {
+        // 有効なデータがあれば追加（少なくとも名前があること）
+        if (staff['名前'] && !items.find(i => i['名前'] === staff['名前'])) {
           items.push(staff);
         }
       });
 
-      // ラベル・値ペア形式
-      const fields = document.querySelectorAll('[class*="field"], [class*="row"]:has([class*="label"])');
-      const singleStaff: { [key: string]: string } = {};
-      fields.forEach(field => {
-        const label = field.querySelector('[class*="label"]')?.textContent?.trim().replace(/[:：]$/, '');
-        const value = field.querySelector('[class*="value"]')?.textContent?.trim() || field.lastElementChild?.textContent?.trim();
-        if (label && value && label !== value) {
-          singleStaff[label] = value;
+      // カード形式で取得できなかった場合、ページ全体からパターンを探す
+      if (items.length === 0) {
+        // 全ての表示テキストを収集
+        const allText = document.body.innerText;
+        const lines = allText.split('\n').map(l => l.trim()).filter(l => l.length > 0);
+
+        let currentStaff: { [key: string]: string } = {};
+        lines.forEach(line => {
+          if (phonePattern.test(line.replace(/\s/g, ''))) {
+            currentStaff['電話番号'] = line;
+            // 電話番号が見つかったら1件の担当者として確定
+            if (currentStaff['名前']) {
+              items.push({ ...currentStaff });
+              currentStaff = {};
+            }
+          } else if (companyRolePattern.test(line)) {
+            const parts = line.split(/[｜|]/);
+            if (parts.length >= 2) {
+              currentStaff['会社'] = parts[0].trim();
+              currentStaff['役割'] = parts[1].trim();
+            }
+          } else if (line.length > 1 && line.length < 20 && !line.includes('担当') && !line.includes('一覧')) {
+            // 名前候補
+            if (!currentStaff['名前']) {
+              currentStaff['名前'] = line;
+            }
+          }
+        });
+
+        // 最後の担当者を追加
+        if (currentStaff['名前']) {
+          items.push(currentStaff);
         }
-      });
-      if (Object.keys(singleStaff).length > 0) {
-        items.push(singleStaff);
       }
 
       return items;
