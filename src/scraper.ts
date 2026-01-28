@@ -440,33 +440,57 @@ class KannaScraper {
       scrollCount++;
     }
 
-    // 全行からデータを抽出（page.evaluateで一括取得）
+    // 全案件リンクを抽出（page.evaluateで一括取得）
     console.log('  案件データを抽出中...');
 
     const extractedData = await this.page.evaluate(() => {
       const results: { name: string; href: string }[] = [];
-      const rows = document.querySelectorAll('table tbody tr');
+      const seen = new Set<string>();
+
+      // 方法1: テーブル行から取得（様々なテーブル構造に対応）
+      const rows = document.querySelectorAll('table tr, [role="row"]');
+      console.log(`テーブル行数: ${rows.length}`);
 
       rows.forEach((row) => {
-        // 最初のセル内のリンクを探す
-        const firstCell = row.querySelector('td');
-        if (!firstCell) return;
-
-        const link = firstCell.querySelector('a');
-        if (!link) return;
-
-        const name = link.textContent?.trim();
-        const href = link.getAttribute('href');
-
-        if (name && href) {
-          results.push({ name, href });
-        }
+        const links = row.querySelectorAll('a');
+        links.forEach((link) => {
+          const href = link.getAttribute('href');
+          // /cms/ を含むリンクが案件詳細へのリンク
+          if (href && href.includes('/cms/') && !seen.has(href)) {
+            const name = link.textContent?.trim();
+            if (name && name.length > 0) {
+              seen.add(href);
+              results.push({ name, href });
+            }
+          }
+        });
       });
+
+      console.log(`テーブルから: ${results.length}`);
+
+      // 方法2: テーブルから取れなかった場合、ページ全体から /cms/ リンクを探す
+      if (results.length === 0) {
+        console.log('テーブルから取得できず、全リンクを検索...');
+        const allLinks = document.querySelectorAll('a[href*="/cms/"]');
+        console.log(`/cms/リンク数: ${allLinks.length}`);
+
+        allLinks.forEach((link) => {
+          const href = link.getAttribute('href');
+          if (href && !seen.has(href)) {
+            const name = link.textContent?.trim();
+            // 案件名らしいもの（短すぎず長すぎず）
+            if (name && name.length > 1 && name.length < 100) {
+              seen.add(href);
+              results.push({ name, href });
+            }
+          }
+        });
+      }
 
       return results;
     });
 
-    console.log(`  テーブルから ${extractedData.length} 件のリンクを検出`);
+    console.log(`  ページから ${extractedData.length} 件の案件リンクを検出`);
 
     for (let i = 0; i < extractedData.length; i++) {
       const { name, href } = extractedData[i];
