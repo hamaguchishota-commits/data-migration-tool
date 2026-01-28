@@ -4,13 +4,13 @@ import * as fs from 'fs';
 import * as path from 'path';
 
 const KANNA_LOGIN_URL = 'https://kanna4u.com/signin';
-const KANNA_PROJECTS_URL = 'https://kanna4u.com/projects';
 const DOWNLOAD_DIR = './downloads';
 
 export interface Project {
   id: string;
   name: string;
   url: string;
+  element?: ElementHandle;
 }
 
 export interface ProjectDetail {
@@ -69,12 +69,45 @@ class KannaScraper {
     return true;
   }
 
-  async getProjects(): Promise<Project[]> {
+  // 左メニューの「案件一覧」をクリックして案件一覧ページへ遷移
+  async navigateToProjectList(): Promise<void> {
     if (!this.page) throw new Error('ブラウザが初期化されていません');
 
-    console.log(`案件一覧ページにアクセス: ${KANNA_PROJECTS_URL}`);
-    await this.page.goto(KANNA_PROJECTS_URL);
+    console.log('左メニューの「案件一覧」をクリック...');
+
+    // 左メニューから「案件一覧」を探してクリック
+    const menuSelectors = [
+      'a:has-text("案件一覧")',
+      'button:has-text("案件一覧")',
+      '[role="menuitem"]:has-text("案件一覧")',
+      'nav a:has-text("案件")',
+      '.sidebar a:has-text("案件")',
+      '.menu a:has-text("案件")',
+      '[class*="menu"] a:has-text("案件")',
+      '[class*="nav"] a:has-text("案件")',
+    ];
+
+    let clicked = false;
+    for (const selector of menuSelectors) {
+      const menuItem = await this.page.$(selector);
+      if (menuItem) {
+        await menuItem.click();
+        clicked = true;
+        break;
+      }
+    }
+
+    if (!clicked) {
+      throw new Error('左メニューの「案件一覧」が見つかりません');
+    }
+
     await this.page.waitForLoadState('networkidle');
+    console.log('案件一覧ページに遷移しました');
+  }
+
+  // 案件一覧から全案件の情報を取得
+  async getProjects(): Promise<Project[]> {
+    if (!this.page) throw new Error('ブラウザが初期化されていません');
 
     const projects: Project[] = [];
     let hasNextPage = true;
@@ -83,50 +116,29 @@ class KannaScraper {
     while (hasNextPage) {
       console.log(`ページ ${pageNum} を取得中...`);
 
-      const projectElements = await this.page.$$('table tbody tr, [data-testid="project-row"], .project-item, .project-card');
+      // 案件リストの各行を取得
+      const projectLinks = await this.page.$$('a[href*="/projects/"]');
 
-      if (projectElements.length === 0) {
-        const projectLinks = await this.page.$$('a[href*="/projects/"]');
+      for (const link of projectLinks) {
+        const href = await link.getAttribute('href');
+        const name = await link.textContent();
 
-        for (const link of projectLinks) {
-          const href = await link.getAttribute('href');
-          const name = await link.textContent();
-
-          if (href && name) {
-            const idMatch = href.match(/\/projects\/(\d+)/);
-            if (idMatch) {
-              const id = idMatch[1];
-              if (!projects.find(p => p.id === id)) {
-                projects.push({
-                  id,
-                  name: name.trim(),
-                  url: `https://kanna4u.com${href}`,
-                });
-              }
-            }
-          }
-        }
-      } else {
-        for (const element of projectElements) {
-          const link = await element.$('a[href*="/projects/"]');
-          if (link) {
-            const href = await link.getAttribute('href');
-            const name = await link.textContent();
-
-            if (href && name) {
-              const idMatch = href.match(/\/projects\/(\d+)/);
-              if (idMatch) {
-                projects.push({
-                  id: idMatch[1],
-                  name: name.trim(),
-                  url: `https://kanna4u.com${href}`,
-                });
-              }
+        if (href && name) {
+          const idMatch = href.match(/\/projects\/(\d+)/);
+          if (idMatch) {
+            const id = idMatch[1];
+            if (!projects.find(p => p.id === id)) {
+              projects.push({
+                id,
+                name: name.trim(),
+                url: `https://kanna4u.com${href}`,
+              });
             }
           }
         }
       }
 
+      // 次のページがあるかチェック
       const nextButton = await this.page.$('button:has-text("次"), a:has-text("次"), [aria-label="Next"], .pagination-next:not([disabled])');
       if (nextButton) {
         const isDisabled = await nextButton.getAttribute('disabled');
@@ -146,13 +158,44 @@ class KannaScraper {
     return projects;
   }
 
-  // 1. 概要タブの全項目を自動検出して取得
-  async getProjectDetails(project: Project): Promise<ProjectDetail> {
+  // 案件一覧ページに戻る
+  async backToProjectList(): Promise<void> {
     if (!this.page) throw new Error('ブラウザが初期化されていません');
 
-    console.log(`\n案件詳細ページにアクセス: ${project.name}`);
-    await this.page.goto(project.url);
+    // 戻るボタンまたは左メニューから案件一覧に戻る
+    const backButton = await this.page.$('button:has-text("戻る"), a:has-text("戻る"), .back-button');
+    if (backButton) {
+      await backButton.click();
+    } else {
+      await this.navigateToProjectList();
+    }
     await this.page.waitForLoadState('networkidle');
+  }
+
+  // 案件をクリックして詳細ページに遷移
+  async clickProject(project: Project): Promise<void> {
+    if (!this.page) throw new Error('ブラウザが初期化されていません');
+
+    console.log(`\n案件をクリック: ${project.name}`);
+
+    // 案件リンクを探してクリック
+    const projectLink = await this.page.$(`a[href*="/projects/${project.id}"]`);
+    if (projectLink) {
+      await projectLink.click();
+    } else {
+      // リンクが見つからない場合はURLに直接遷移
+      await this.page.goto(project.url);
+    }
+
+    await this.page.waitForLoadState('networkidle');
+    console.log('案件詳細ページに遷移しました');
+  }
+
+  // 1. 概要タブの全項目を自動検出して取得
+  async getProjectDetails(): Promise<ProjectDetail> {
+    if (!this.page) throw new Error('ブラウザが初期化されていません');
+
+    console.log('  概要タブを開く...');
 
     // 概要タブをクリック（既に選択されている場合もある）
     const overviewTab = await this.page.$('button:has-text("概要"), a:has-text("概要"), [role="tab"]:has-text("概要"), .tab:has-text("概要")');
@@ -215,10 +258,10 @@ class KannaScraper {
   }
 
   // 2. 写真タブからフォルダ一覧と写真をダウンロード
-  async downloadPhotos(project: Project): Promise<FolderItem[]> {
+  async downloadPhotos(projectName: string): Promise<FolderItem[]> {
     if (!this.page) throw new Error('ブラウザが初期化されていません');
 
-    const projectDir = path.join(DOWNLOAD_DIR, this.sanitizeFilename(project.name), 'photos');
+    const projectDir = path.join(DOWNLOAD_DIR, this.sanitizeFilename(projectName), 'photos');
     if (!fs.existsSync(projectDir)) {
       fs.mkdirSync(projectDir, { recursive: true });
     }
@@ -285,10 +328,10 @@ class KannaScraper {
   }
 
   // 3. 資料タブからフォルダ一覧とファイルをダウンロード
-  async downloadDocuments(project: Project): Promise<FolderItem[]> {
+  async downloadDocuments(projectName: string): Promise<FolderItem[]> {
     if (!this.page) throw new Error('ブラウザが初期化されていません');
 
-    const projectDir = path.join(DOWNLOAD_DIR, this.sanitizeFilename(project.name), 'documents');
+    const projectDir = path.join(DOWNLOAD_DIR, this.sanitizeFilename(projectName), 'documents');
     if (!fs.existsSync(projectDir)) {
       fs.mkdirSync(projectDir, { recursive: true });
     }
@@ -508,27 +551,35 @@ async function main(): Promise<void> {
     await scraper.login();
     console.log('ログイン成功！');
 
-    // 案件一覧を取得
+    // 1. 左メニューの「案件一覧」をクリック
+    await scraper.navigateToProjectList();
+
+    // 2. 案件一覧から全案件を取得
     const projects = await scraper.getProjects();
     console.log(`\n=== ${projects.length} 件の案件を処理します ===`);
 
-    for (const project of projects) {
-      console.log(`\n----------------------------------------`);
-      console.log(`案件: [${project.id}] ${project.name}`);
-      console.log(`----------------------------------------`);
+    // 3. 各案件を順番に処理
+    for (let i = 0; i < projects.length; i++) {
+      const project = projects[i];
+      console.log(`\n========================================`);
+      console.log(`案件 ${i + 1}/${projects.length}: [${project.id}] ${project.name}`);
+      console.log(`========================================`);
 
-      // 1. 概要タブの項目を取得
-      const details = await scraper.getProjectDetails(project);
+      // 案件をクリックして詳細ページへ遷移
+      await scraper.clickProject(project);
+
+      // 概要タブの項目を取得
+      const details = await scraper.getProjectDetails();
       console.log('  概要データ:');
       for (const [key, value] of Object.entries(details)) {
         console.log(`    ${key}: ${value}`);
       }
 
-      // 2. 写真をダウンロード
-      const photos = await scraper.downloadPhotos(project);
+      // 写真タブをクリックして写真をダウンロード
+      const photos = await scraper.downloadPhotos(project.name);
 
-      // 3. 資料をダウンロード
-      const documents = await scraper.downloadDocuments(project);
+      // 資料タブをクリックして資料をダウンロード
+      const documents = await scraper.downloadDocuments(project.name);
 
       // 結果をJSONで保存
       const resultDir = path.join(DOWNLOAD_DIR, scraper['sanitizeFilename'](project.name));
@@ -537,7 +588,7 @@ async function main(): Promise<void> {
       }
 
       const result = {
-        project,
+        project: { id: project.id, name: project.name, url: project.url },
         details,
         photos,
         documents,
@@ -550,6 +601,11 @@ async function main(): Promise<void> {
         'utf-8'
       );
       console.log(`  データをproject_data.jsonに保存しました`);
+
+      // 案件一覧に戻る（最後の案件以外）
+      if (i < projects.length - 1) {
+        await scraper.backToProjectList();
+      }
     }
 
     console.log('\n=== 全ての処理が完了しました ===');
