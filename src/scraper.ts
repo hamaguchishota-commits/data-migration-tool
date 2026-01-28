@@ -990,12 +990,17 @@ class KannaScraper {
     return reports;
   }
 
-  // 工程表タブからデータを取得
-  async getSchedule(projectName: string): Promise<any[]> {
+  // 工程表タブからExcelをダウンロード
+  async downloadSchedule(projectName: string): Promise<string[]> {
     if (!this.page) throw new Error('ブラウザが初期化されていません');
 
+    const projectDir = path.join(DOWNLOAD_DIR, this.sanitizeFilename(projectName), 'schedule');
+    if (!fs.existsSync(projectDir)) {
+      fs.mkdirSync(projectDir, { recursive: true });
+    }
+
     console.log('  工程表タブを開く...');
-    const scheduleItems: any[] = [];
+    const downloadedFiles: string[] = [];
 
     // 工程表タブを探す
     const scheduleTab = this.page.locator('button:has-text("工程表"), a:has-text("工程表"), [role="tab"]:has-text("工程表")').first();
@@ -1014,61 +1019,32 @@ class KannaScraper {
       return [];
     }
 
-    // 工程表データを抽出
-    const scheduleData = await this.page.evaluate(() => {
-      const items: any[] = [];
+    // Excel出力ボタンを探してクリック
+    const excelBtn = await this.page.$('button:has-text("Excel出力"), button:has-text("Excel"), a:has-text("Excel出力"), a:has-text("Excel")');
 
-      // テーブル形式
-      const tables = document.querySelectorAll('table');
-      tables.forEach(table => {
-        const headers: string[] = [];
-        const headerCells = table.querySelectorAll('thead th, thead td, tr:first-child th, tr:first-child td');
-        headerCells.forEach(cell => {
-          headers.push(cell.textContent?.trim() || '');
-        });
+    if (excelBtn) {
+      try {
+        console.log('    Excel出力ボタンを検出');
+        const [download] = await Promise.all([
+          this.page.waitForEvent('download', { timeout: 30000 }),
+          excelBtn.click(),
+        ]);
 
-        const rows = table.querySelectorAll('tbody tr, tr:not(:first-child)');
-        rows.forEach(row => {
-          const item: { [key: string]: string } = {};
-          const cells = row.querySelectorAll('td, th');
-          cells.forEach((cell, idx) => {
-            const key = headers[idx] || `column_${idx}`;
-            item[key] = cell.textContent?.trim() || '';
-          });
-          if (Object.keys(item).length > 0 && Object.values(item).some(v => v)) {
-            items.push(item);
-          }
-        });
-      });
+        const suggestedName = download.suggestedFilename();
+        const safeFilename = this.sanitizeFilename(suggestedName || 'schedule.xlsx');
+        const filepath = path.join(projectDir, safeFilename);
+        await download.saveAs(filepath);
+        downloadedFiles.push(safeFilename);
+        console.log(`    ダウンロード完了: ${safeFilename}`);
+      } catch (e) {
+        console.log(`    Excelダウンロード失敗: ${e}`);
+      }
+    } else {
+      console.log('    Excel出力ボタンが見つかりません');
+    }
 
-      // ガントチャートやタイムライン形式
-      const ganttItems = document.querySelectorAll('[class*="gantt"] [class*="item"], [class*="timeline"] [class*="item"], [class*="schedule"] [class*="item"], [class*="task"]');
-      ganttItems.forEach(item => {
-        const name = item.querySelector('[class*="name"], [class*="title"]')?.textContent?.trim();
-        const start = item.querySelector('[class*="start"]')?.textContent?.trim();
-        const end = item.querySelector('[class*="end"]')?.textContent?.trim();
-        const status = item.querySelector('[class*="status"]')?.textContent?.trim();
-
-        if (name) {
-          items.push({ name, start, end, status });
-        }
-      });
-
-      // リスト形式
-      const listItems = document.querySelectorAll('[class*="list"] [class*="item"], [class*="row"]:has([class*="schedule"])');
-      listItems.forEach(item => {
-        const text = item.textContent?.trim();
-        if (text && !items.find(i => JSON.stringify(i).includes(text.substring(0, 20)))) {
-          items.push({ content: text });
-        }
-      });
-
-      return items;
-    });
-
-    scheduleItems.push(...scheduleData);
-    console.log(`  工程表: ${scheduleItems.length} 件`);
-    return scheduleItems;
+    console.log(`  工程表: ${downloadedFiles.length} ファイル`);
+    return downloadedFiles;
   }
 
   // タスクタブからデータを取得
@@ -1446,8 +1422,8 @@ async function main(): Promise<void> {
       // 報告タブからデータを取得
       const reports = await scraper.getReports(project.name);
 
-      // 工程表タブからデータを取得
-      const schedule = await scraper.getSchedule(project.name);
+      // 工程表タブからExcelをダウンロード
+      const schedule = await scraper.downloadSchedule(project.name);
 
       // タスクタブからデータを取得
       const tasks = await scraper.getTasks(project.name);
