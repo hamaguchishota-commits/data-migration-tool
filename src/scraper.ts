@@ -901,6 +901,505 @@ class KannaScraper {
     return downloadedFiles;
   }
 
+  // 報告タブからデータを取得
+  async getReports(projectName: string): Promise<any[]> {
+    if (!this.page) throw new Error('ブラウザが初期化されていません');
+
+    console.log('  報告タブを開く...');
+    const reports: any[] = [];
+
+    // 報告タブを探す
+    const reportTab = this.page.locator('button:has-text("報告"), a:has-text("報告"), [role="tab"]:has-text("報告")').first();
+
+    try {
+      const isVisible = await reportTab.isVisible();
+      if (!isVisible) {
+        console.log('  報告タブが見つかりません');
+        return [];
+      }
+
+      await reportTab.click();
+      await sleep(1500);
+    } catch {
+      console.log('  報告タブが見つかりません');
+      return [];
+    }
+
+    // 報告リストの行を取得
+    const reportRows = await this.page.$$('table tbody tr, [class*="list"] [class*="item"], [class*="report"] [class*="row"], [class*="row"]:has([class*="report"])');
+
+    if (reportRows.length > 0) {
+      console.log(`    ${reportRows.length} 件の報告を検出`);
+
+      for (let i = 0; i < reportRows.length; i++) {
+        try {
+          const currentRows = await this.page.$$('table tbody tr, [class*="list"] [class*="item"], [class*="report"] [class*="row"], [class*="row"]:has([class*="report"])');
+          if (i >= currentRows.length) break;
+
+          const row = currentRows[i];
+          const rowText = await row.textContent();
+          console.log(`      [${i + 1}/${reportRows.length}] ${rowText?.trim().substring(0, 40)}...`);
+
+          // 行をクリックして詳細を開く
+          await row.click();
+          await sleep(1500);
+
+          // 詳細データを取得
+          const reportDetail = await this.page.evaluate(() => {
+            const detail: { [key: string]: string } = {};
+
+            // モーダルまたは詳細ビューからデータを抽出
+            const modal = document.querySelector('[role="dialog"], [class*="modal"], [class*="detail"], [class*="drawer"]');
+            const container = modal || document;
+
+            // テキストコンテンツを取得
+            const title = container.querySelector('h1, h2, h3, [class*="title"]');
+            if (title) detail['タイトル'] = title.textContent?.trim() || '';
+
+            const date = container.querySelector('[class*="date"], time');
+            if (date) detail['日時'] = date.textContent?.trim() || '';
+
+            const content = container.querySelector('[class*="content"], [class*="body"], [class*="description"], p');
+            if (content) detail['内容'] = content.textContent?.trim() || '';
+
+            const author = container.querySelector('[class*="author"], [class*="user"], [class*="name"]');
+            if (author) detail['作成者'] = author.textContent?.trim() || '';
+
+            // ラベル・値ペアを探す
+            const rows = container.querySelectorAll('[class*="row"], [class*="field"], tr');
+            rows.forEach(row => {
+              const children = row.children;
+              if (children.length >= 2) {
+                const label = children[0].textContent?.trim().replace(/[:：]$/, '') || '';
+                const value = children[1].textContent?.trim() || '';
+                if (label && value && !detail[label]) {
+                  detail[label] = value;
+                }
+              }
+            });
+
+            return detail;
+          });
+
+          reports.push({ index: i + 1, ...reportDetail });
+
+          // 閉じる
+          const closeBtn = await this.page.$('button:has-text("閉じる"), button[aria-label="Close"], [class*="close"], button:has-text("×")');
+          if (closeBtn) {
+            await closeBtn.click();
+          } else {
+            await this.page.keyboard.press('Escape');
+          }
+          await sleep(500);
+
+        } catch (e) {
+          console.log(`      エラー: ${e}`);
+        }
+      }
+    } else {
+      // リストがない場合、ページ全体からテキストを取得
+      const pageContent = await this.page.evaluate(() => {
+        const container = document.querySelector('[class*="tab-content"], [class*="panel"], main, [role="tabpanel"]');
+        return container?.textContent?.trim() || '';
+      });
+      if (pageContent) {
+        reports.push({ content: pageContent });
+      }
+    }
+
+    console.log(`  報告: ${reports.length} 件`);
+    return reports;
+  }
+
+  // 工程表タブからデータを取得
+  async getSchedule(projectName: string): Promise<any[]> {
+    if (!this.page) throw new Error('ブラウザが初期化されていません');
+
+    console.log('  工程表タブを開く...');
+    const scheduleItems: any[] = [];
+
+    // 工程表タブを探す
+    const scheduleTab = this.page.locator('button:has-text("工程表"), a:has-text("工程表"), [role="tab"]:has-text("工程表")').first();
+
+    try {
+      const isVisible = await scheduleTab.isVisible();
+      if (!isVisible) {
+        console.log('  工程表タブが見つかりません');
+        return [];
+      }
+
+      await scheduleTab.click();
+      await sleep(1500);
+    } catch {
+      console.log('  工程表タブが見つかりません');
+      return [];
+    }
+
+    // 工程表データを抽出
+    const scheduleData = await this.page.evaluate(() => {
+      const items: any[] = [];
+
+      // テーブル形式
+      const tables = document.querySelectorAll('table');
+      tables.forEach(table => {
+        const headers: string[] = [];
+        const headerCells = table.querySelectorAll('thead th, thead td, tr:first-child th, tr:first-child td');
+        headerCells.forEach(cell => {
+          headers.push(cell.textContent?.trim() || '');
+        });
+
+        const rows = table.querySelectorAll('tbody tr, tr:not(:first-child)');
+        rows.forEach(row => {
+          const item: { [key: string]: string } = {};
+          const cells = row.querySelectorAll('td, th');
+          cells.forEach((cell, idx) => {
+            const key = headers[idx] || `column_${idx}`;
+            item[key] = cell.textContent?.trim() || '';
+          });
+          if (Object.keys(item).length > 0 && Object.values(item).some(v => v)) {
+            items.push(item);
+          }
+        });
+      });
+
+      // ガントチャートやタイムライン形式
+      const ganttItems = document.querySelectorAll('[class*="gantt"] [class*="item"], [class*="timeline"] [class*="item"], [class*="schedule"] [class*="item"], [class*="task"]');
+      ganttItems.forEach(item => {
+        const name = item.querySelector('[class*="name"], [class*="title"]')?.textContent?.trim();
+        const start = item.querySelector('[class*="start"]')?.textContent?.trim();
+        const end = item.querySelector('[class*="end"]')?.textContent?.trim();
+        const status = item.querySelector('[class*="status"]')?.textContent?.trim();
+
+        if (name) {
+          items.push({ name, start, end, status });
+        }
+      });
+
+      // リスト形式
+      const listItems = document.querySelectorAll('[class*="list"] [class*="item"], [class*="row"]:has([class*="schedule"])');
+      listItems.forEach(item => {
+        const text = item.textContent?.trim();
+        if (text && !items.find(i => JSON.stringify(i).includes(text.substring(0, 20)))) {
+          items.push({ content: text });
+        }
+      });
+
+      return items;
+    });
+
+    scheduleItems.push(...scheduleData);
+    console.log(`  工程表: ${scheduleItems.length} 件`);
+    return scheduleItems;
+  }
+
+  // タスクタブからデータを取得
+  async getTasks(projectName: string): Promise<any[]> {
+    if (!this.page) throw new Error('ブラウザが初期化されていません');
+
+    console.log('  タスクタブを開く...');
+    const tasks: any[] = [];
+
+    // タスクタブを探す
+    const taskTab = this.page.locator('button:has-text("タスク"), a:has-text("タスク"), [role="tab"]:has-text("タスク")').first();
+
+    try {
+      const isVisible = await taskTab.isVisible();
+      if (!isVisible) {
+        console.log('  タスクタブが見つかりません');
+        return [];
+      }
+
+      await taskTab.click();
+      await sleep(1500);
+    } catch {
+      console.log('  タスクタブが見つかりません');
+      return [];
+    }
+
+    // タスクリストの行を取得
+    const taskRows = await this.page.$$('table tbody tr, [class*="list"] [class*="item"], [class*="task"] [class*="row"], [class*="row"]:has([class*="task"]), [class*="todo"], [class*="checklist"] [class*="item"]');
+
+    if (taskRows.length > 0) {
+      console.log(`    ${taskRows.length} 件のタスクを検出`);
+
+      for (let i = 0; i < taskRows.length; i++) {
+        try {
+          const currentRows = await this.page.$$('table tbody tr, [class*="list"] [class*="item"], [class*="task"] [class*="row"], [class*="row"]:has([class*="task"]), [class*="todo"], [class*="checklist"] [class*="item"]');
+          if (i >= currentRows.length) break;
+
+          const row = currentRows[i];
+
+          // 行から直接データを抽出
+          const taskData = await row.evaluate((el) => {
+            const task: { [key: string]: string } = {};
+
+            // タイトル/名前
+            const title = el.querySelector('[class*="title"], [class*="name"], a, td:first-child');
+            if (title) task['タイトル'] = title.textContent?.trim() || '';
+
+            // ステータス
+            const status = el.querySelector('[class*="status"], [class*="state"]');
+            if (status) task['ステータス'] = status.textContent?.trim() || '';
+
+            // チェックボックス
+            const checkbox = el.querySelector('input[type="checkbox"]');
+            if (checkbox) task['完了'] = (checkbox as HTMLInputElement).checked ? '完了' : '未完了';
+
+            // 担当者
+            const assignee = el.querySelector('[class*="assignee"], [class*="user"], [class*="owner"]');
+            if (assignee) task['担当者'] = assignee.textContent?.trim() || '';
+
+            // 期限
+            const dueDate = el.querySelector('[class*="due"], [class*="deadline"], [class*="date"]');
+            if (dueDate) task['期限'] = dueDate.textContent?.trim() || '';
+
+            // テーブル行の場合
+            const cells = el.querySelectorAll('td');
+            if (cells.length > 0) {
+              cells.forEach((cell, idx) => {
+                const text = cell.textContent?.trim();
+                if (text && !Object.values(task).includes(text)) {
+                  task[`列${idx + 1}`] = text;
+                }
+              });
+            }
+
+            // 全テキスト（フォールバック）
+            if (Object.keys(task).length === 0) {
+              task['内容'] = el.textContent?.trim() || '';
+            }
+
+            return task;
+          });
+
+          tasks.push({ index: i + 1, ...taskData });
+          console.log(`      [${i + 1}/${taskRows.length}] ${taskData['タイトル'] || taskData['内容']?.substring(0, 30) || 'タスク'}...`);
+
+        } catch (e) {
+          console.log(`      エラー: ${e}`);
+        }
+      }
+    } else {
+      // リストがない場合
+      const pageContent = await this.page.evaluate(() => {
+        const container = document.querySelector('[class*="tab-content"], [class*="panel"], main, [role="tabpanel"]');
+        return container?.textContent?.trim() || '';
+      });
+      if (pageContent && pageContent !== '') {
+        tasks.push({ content: pageContent });
+      }
+    }
+
+    console.log(`  タスク: ${tasks.length} 件`);
+    return tasks;
+  }
+
+  // 帳票タブからデータをダウンロード
+  async downloadForms(projectName: string): Promise<FolderItem[]> {
+    if (!this.page) throw new Error('ブラウザが初期化されていません');
+
+    const projectDir = path.join(DOWNLOAD_DIR, this.sanitizeFilename(projectName), 'forms');
+    if (!fs.existsSync(projectDir)) {
+      fs.mkdirSync(projectDir, { recursive: true });
+    }
+
+    console.log('  帳票タブを開く...');
+
+    // 帳票タブを探す
+    const formsTab = this.page.locator('button:has-text("帳票"), a:has-text("帳票"), [role="tab"]:has-text("帳票")').first();
+
+    try {
+      const isVisible = await formsTab.isVisible();
+      if (!isVisible) {
+        console.log('  帳票タブが見つかりません');
+        return [];
+      }
+
+      await formsTab.click();
+      await sleep(1500);
+    } catch {
+      console.log('  帳票タブが見つかりません');
+      return [];
+    }
+
+    const folders: FolderItem[] = [];
+    const files = await this.downloadFilesFromCurrentView(projectDir, 'forms');
+
+    if (files.length > 0) {
+      folders.push({ name: 'forms', files });
+    }
+
+    console.log(`  帳票: ${files.length} ファイル`);
+    return folders;
+  }
+
+  // 写真台帳タブからデータをダウンロード
+  async downloadPhotoLedger(projectName: string): Promise<FolderItem[]> {
+    if (!this.page) throw new Error('ブラウザが初期化されていません');
+
+    const projectDir = path.join(DOWNLOAD_DIR, this.sanitizeFilename(projectName), 'photo_ledger');
+    if (!fs.existsSync(projectDir)) {
+      fs.mkdirSync(projectDir, { recursive: true });
+    }
+
+    console.log('  写真台帳タブを開く...');
+
+    // 写真台帳タブを探す
+    const ledgerTab = this.page.locator('button:has-text("写真台帳"), a:has-text("写真台帳"), [role="tab"]:has-text("写真台帳")').first();
+
+    try {
+      const isVisible = await ledgerTab.isVisible();
+      if (!isVisible) {
+        console.log('  写真台帳タブが見つかりません');
+        return [];
+      }
+
+      await ledgerTab.click();
+      await sleep(1500);
+    } catch {
+      console.log('  写真台帳タブが見つかりません');
+      return [];
+    }
+
+    const folders: FolderItem[] = [];
+
+    // ダウンロードボタンがあるか確認（一括ダウンロード）
+    const bulkDownloadBtn = await this.page.$('button:has-text("一括ダウンロード"), button:has-text("全てダウンロード"), a:has-text("ダウンロード"), button:has-text("PDF"), button:has-text("出力")');
+
+    if (bulkDownloadBtn) {
+      try {
+        console.log('    一括ダウンロードボタンを検出');
+        const [download] = await Promise.all([
+          this.page.waitForEvent('download', { timeout: 30000 }),
+          bulkDownloadBtn.click(),
+        ]);
+
+        const suggestedName = download.suggestedFilename();
+        const safeFilename = this.sanitizeFilename(suggestedName || 'photo_ledger.pdf');
+        const filepath = path.join(projectDir, safeFilename);
+        await download.saveAs(filepath);
+        folders.push({ name: 'photo_ledger', files: [safeFilename] });
+        console.log(`    ダウンロード完了: ${safeFilename}`);
+      } catch {
+        console.log('    一括ダウンロード失敗');
+      }
+    } else {
+      // リスト形式の場合
+      const files = await this.downloadFilesFromCurrentView(projectDir, 'photo_ledger');
+      if (files.length > 0) {
+        folders.push({ name: 'photo_ledger', files });
+      }
+    }
+
+    const totalFiles = folders.reduce((sum, f) => sum + f.files.length, 0);
+    console.log(`  写真台帳: ${totalFiles} ファイル`);
+    return folders;
+  }
+
+  // 担当タブからデータを取得
+  async getStaff(projectName: string): Promise<any[]> {
+    if (!this.page) throw new Error('ブラウザが初期化されていません');
+
+    console.log('  担当タブを開く...');
+    const staffList: any[] = [];
+
+    // 担当タブを探す
+    const staffTab = this.page.locator('button:has-text("担当"), a:has-text("担当"), [role="tab"]:has-text("担当")').first();
+
+    try {
+      const isVisible = await staffTab.isVisible();
+      if (!isVisible) {
+        console.log('  担当タブが見つかりません');
+        return [];
+      }
+
+      await staffTab.click();
+      await sleep(1500);
+    } catch {
+      console.log('  担当タブが見つかりません');
+      return [];
+    }
+
+    // 担当者データを抽出
+    const staffData = await this.page.evaluate(() => {
+      const items: any[] = [];
+
+      // テーブル形式
+      const tables = document.querySelectorAll('table');
+      tables.forEach(table => {
+        const headers: string[] = [];
+        const headerCells = table.querySelectorAll('thead th, thead td, tr:first-child th, tr:first-child td');
+        headerCells.forEach(cell => {
+          headers.push(cell.textContent?.trim() || '');
+        });
+
+        const rows = table.querySelectorAll('tbody tr, tr:not(:first-child)');
+        rows.forEach(row => {
+          const item: { [key: string]: string } = {};
+          const cells = row.querySelectorAll('td, th');
+          cells.forEach((cell, idx) => {
+            const key = headers[idx] || `column_${idx}`;
+            item[key] = cell.textContent?.trim() || '';
+          });
+          if (Object.keys(item).length > 0 && Object.values(item).some(v => v)) {
+            items.push(item);
+          }
+        });
+      });
+
+      // リスト/カード形式
+      const listItems = document.querySelectorAll('[class*="list"] [class*="item"], [class*="user"], [class*="member"], [class*="staff"], [class*="card"]');
+      listItems.forEach(item => {
+        const staff: { [key: string]: string } = {};
+
+        const name = item.querySelector('[class*="name"]')?.textContent?.trim();
+        if (name) staff['名前'] = name;
+
+        const role = item.querySelector('[class*="role"], [class*="position"]')?.textContent?.trim();
+        if (role) staff['役割'] = role;
+
+        const email = item.querySelector('[class*="email"], a[href^="mailto:"]')?.textContent?.trim();
+        if (email) staff['メール'] = email;
+
+        const phone = item.querySelector('[class*="phone"], [class*="tel"]')?.textContent?.trim();
+        if (phone) staff['電話'] = phone;
+
+        const company = item.querySelector('[class*="company"], [class*="organization"]')?.textContent?.trim();
+        if (company) staff['会社'] = company;
+
+        // フォールバック: テキスト全体
+        if (Object.keys(staff).length === 0) {
+          const text = item.textContent?.trim();
+          if (text) staff['内容'] = text;
+        }
+
+        if (Object.keys(staff).length > 0 && !items.find(i => JSON.stringify(i) === JSON.stringify(staff))) {
+          items.push(staff);
+        }
+      });
+
+      // ラベル・値ペア形式
+      const fields = document.querySelectorAll('[class*="field"], [class*="row"]:has([class*="label"])');
+      const singleStaff: { [key: string]: string } = {};
+      fields.forEach(field => {
+        const label = field.querySelector('[class*="label"]')?.textContent?.trim().replace(/[:：]$/, '');
+        const value = field.querySelector('[class*="value"]')?.textContent?.trim() || field.lastElementChild?.textContent?.trim();
+        if (label && value && label !== value) {
+          singleStaff[label] = value;
+        }
+      });
+      if (Object.keys(singleStaff).length > 0) {
+        items.push(singleStaff);
+      }
+
+      return items;
+    });
+
+    staffList.push(...staffData);
+    console.log(`  担当: ${staffList.length} 件`);
+    return staffList;
+  }
+
   // ファイル名をサニタイズ
   private sanitizeFilename(name: string): string {
     return name.replace(/[<>:"/\\|?*\x00-\x1f]/g, '_').substring(0, 200);
@@ -965,11 +1464,29 @@ async function main(): Promise<void> {
         console.log(`    ${key}: ${value}`);
       }
 
+      // 報告タブからデータを取得
+      const reports = await scraper.getReports(project.name);
+
+      // 工程表タブからデータを取得
+      const schedule = await scraper.getSchedule(project.name);
+
+      // タスクタブからデータを取得
+      const tasks = await scraper.getTasks(project.name);
+
       // 写真タブをクリックして写真をダウンロード
       const photos = await scraper.downloadPhotos(project.name);
 
       // 資料タブをクリックして資料をダウンロード
       const documents = await scraper.downloadDocuments(project.name);
+
+      // 帳票タブからファイルをダウンロード
+      const forms = await scraper.downloadForms(project.name);
+
+      // 写真台帳タブからファイルをダウンロード
+      const photoLedger = await scraper.downloadPhotoLedger(project.name);
+
+      // 担当タブからデータを取得
+      const staff = await scraper.getStaff(project.name);
 
       // 結果をJSONで保存
       if (!fs.existsSync(projectDir)) {
@@ -979,8 +1496,14 @@ async function main(): Promise<void> {
       const result = {
         project: { id: project.id, name: project.name, url: project.url },
         details,
+        reports,
+        schedule,
+        tasks,
         photos,
         documents,
+        forms,
+        photoLedger,
+        staff,
         exportedAt: new Date().toISOString(),
       };
 
