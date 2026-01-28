@@ -118,7 +118,7 @@ class KannaScraper {
   async navigateToProjectList(): Promise<void> {
     if (!this.page) throw new Error('ブラウザが初期化されていません');
 
-    console.log('左メニューの「案件一覧」をクリック...');
+    console.log('左サイドバーの「案件一覧」をクリック...');
 
     // クリック前のスクリーンショット
     await this.saveScreenshot('before_click_menu');
@@ -127,53 +127,86 @@ class KannaScraper {
     const currentUrl = this.page.url();
     console.log(`  現在のURL: ${currentUrl}`);
 
-    // 緑のサイドバーから「案件一覧」テキストを探してクリック
+    // 緑のサイドバー内の「案件一覧」を特定するセレクタ
+    // ダッシュボードの「未完了の担当案件」ではなく、左メニューを狙う
     const menuSelectors = [
-      // 完全一致
-      'text=案件一覧',
-      // サイドバー内
-      'aside >> text=案件一覧',
-      '[class*="sidebar"] >> text=案件一覧',
-      '[class*="Sidebar"] >> text=案件一覧',
-      '[class*="side"] >> text=案件一覧',
-      '[class*="menu"] >> text=案件一覧',
-      '[class*="nav"] >> text=案件一覧',
-      // リンク・ボタン
-      'a:has-text("案件一覧")',
-      'button:has-text("案件一覧")',
-      'div:has-text("案件一覧"):not(:has(div:has-text("案件一覧")))',
-      'span:has-text("案件一覧")',
-      // XPath風の検索（テキスト内容で検索）
-      ':text("案件一覧")',
+      // サイドバー/ナビゲーション内のリンク（優先）
+      'nav a:has-text("案件一覧")',
+      'aside a:has-text("案件一覧")',
+      '[role="navigation"] a:has-text("案件一覧")',
+      // 緑系のサイドバー（class名に基づく）
+      '[class*="sidebar"] a:has-text("案件一覧")',
+      '[class*="Sidebar"] a:has-text("案件一覧")',
+      '[class*="sidenav"] a:has-text("案件一覧")',
+      '[class*="SideNav"] a:has-text("案件一覧")',
+      '[class*="side-menu"] a:has-text("案件一覧")',
+      '[class*="leftMenu"] a:has-text("案件一覧")',
+      '[class*="left-menu"] a:has-text("案件一覧")',
+      '[class*="menu"] a:has-text("案件一覧")',
+      // アイコン付きのリンク（サイドバー特有）
+      'a:has(svg):has-text("案件一覧")',
+      'a:has(i):has-text("案件一覧")',
+      'a:has([class*="icon"]):has-text("案件一覧")',
+      // 左側に配置された要素（position: fixed/absolute）
+      '[style*="left"] a:has-text("案件一覧")',
+      // リストアイテム内のリンク
+      'li a:has-text("案件一覧")',
+      'ul a:has-text("案件一覧")',
     ];
 
     let clicked = false;
     for (const selector of menuSelectors) {
       try {
         console.log(`  セレクタを試行: ${selector}`);
-        const menuItem = await this.page.$(selector);
-        if (menuItem) {
+        const menuItems = await this.page.$$(selector);
+
+        for (const menuItem of menuItems) {
           // 要素が表示されているか確認
           const isVisible = await menuItem.isVisible();
-          if (isVisible) {
+          if (!isVisible) continue;
+
+          // 要素の位置を確認（左側にあるかどうか）
+          const box = await menuItem.boundingBox();
+          if (box && box.x < 300) { // 左から300px以内 = サイドバー
+            console.log(`  サイドバー内の要素を発見 (x=${box.x})`);
             await menuItem.click();
             clicked = true;
             console.log(`  セレクタ "${selector}" でクリック成功`);
             break;
-          } else {
-            console.log(`  要素は見つかったが非表示: ${selector}`);
+          } else if (box) {
+            console.log(`  要素は見つかったが右側にある (x=${box.x}): ${selector}`);
           }
         }
+
+        if (clicked) break;
       } catch (e) {
         // セレクタが無効な場合はスキップ
-        console.log(`  セレクタ失敗: ${selector}`);
+      }
+    }
+
+    // 上記で見つからない場合、位置ベースで探す
+    if (!clicked) {
+      console.log('  位置ベースで左メニューを探索中...');
+      const allLinks = await this.page.$$('a');
+      for (const link of allLinks) {
+        const text = await link.textContent();
+        if (text && text.includes('案件一覧')) {
+          const box = await link.boundingBox();
+          const isVisible = await link.isVisible();
+          if (isVisible && box && box.x < 300) {
+            console.log(`  位置ベースで発見 (x=${box.x}): "${text.trim()}"`);
+            await link.click();
+            clicked = true;
+            break;
+          }
+        }
       }
     }
 
     if (!clicked) {
       // エラー時のスクリーンショット
       await this.saveScreenshot('error_menu_not_found');
-      throw new Error('左メニューの「案件一覧」が見つかりません。スクリーンショットを確認してください。');
+      throw new Error('左サイドバーの「案件一覧」が見つかりません。スクリーンショットを確認してください。');
     }
 
     await this.page.waitForLoadState('networkidle');
