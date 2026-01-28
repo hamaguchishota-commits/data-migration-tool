@@ -500,9 +500,9 @@ class KannaScraper {
       if (seenUrls.has(fullUrl)) continue;
       seenUrls.add(fullUrl);
 
-      // IDを抽出
+      // IDを抽出（UUID形式にも対応）
       let id = `row-${i}`;
-      const idMatch = href.match(/\/cms\/(\d+)/) || href.match(/\/(\d+)(?:\/|$|\?)/) || href.match(/id=(\d+)/);
+      const idMatch = href.match(/\/cms\/([a-zA-Z0-9\-]+)/);
       if (idMatch) {
         id = idMatch[1];
       }
@@ -579,95 +579,70 @@ class KannaScraper {
     // デバッグ用スクリーンショット
     await this.saveScreenshot('project_detail_page');
 
-    // KANNA専用: セクションごとにラベル・値ペアを動的に抽出
+    // KANNA専用: メインコンテンツ領域からラベル・値ペアを抽出
     const extractedData = await this.page.evaluate(() => {
       const result: { [key: string]: string } = {};
 
-      // セクションヘッダーのキーワード（これらは値ではなくセクション名として除外）
-      const sectionHeaders = ['案件情報', '物件情報', '施工に関する注意点', '顧客情報', '関連案件',
-                              '工程表', 'タスク', '報告', '写真', '資料', '帳票', '写真台帳', '担当'];
+      // 除外するテキスト（UI要素、タブ名など）
+      const excludeTexts = [
+        '概要', '関連案件', '工程表', 'タスク', '報告', '写真', '資料', '帳票', '写真台帳', '担当',
+        '案件情報', '物件情報', '施工に関する注意点', '顧客情報',
+        '編集する', 'チャット開始', 'ビュー表示', '詳細検索', '表示設定',
+        'KANNA', 'AIベータ版', 'こんにちは', '案件作成', '案件ボード', '案件カレンダー',
+        '顧客一覧', '物件一覧', 'エクスポート', '設定', 'メンバー管理', '料金プラン',
+        'お問い合わせ', '運営からのお知らせ', 'よくあるご質問', '操作マニュアル', '利用規約', 'プライバシーポリシー',
+        '案件概要をCSVでダウンロード'
+      ];
 
-      // タブ名として除外するもの
-      const tabNames = ['概要', '関連案件', '工程表', 'タスク', '報告', '写真', '資料', '帳票', '写真台帳', '担当'];
+      // 概要ページの既知のフィールドラベル（これらを探す）
+      const knownLabels = [
+        '案件名', '開始日', '終了日', '案件テンプレート', '案件フロー', '備考', '親案件',
+        '物件名', '住所',
+        '駐車スペース', '工事可能期間', '土日の工事', '現場ルール', 'その他',
+        '区分', '氏名', '氏名(フリガナ)', '会社名または屋号名', '会社名または屋号名(フリガナ)', '担当者名', '電話番号1', '電話番号2', 'メールアドレス'
+      ];
 
-      // 方法1: 2つの子要素を持つ行構造を探す（ラベル-値ペア）
-      // KANNAは div > div[label] + div[value] のような構造が多い
-      const allRows = document.querySelectorAll('div, tr');
+      // メインコンテンツエリアを特定（サイドバーを除外）
+      // KANNAの構造: サイドバーは左側、メインコンテンツは右側
+      const mainContent = document.querySelector('main, [role="main"], [class*="content"], [class*="main"]')
+                        || document.body;
 
-      allRows.forEach(row => {
-        const children = Array.from(row.children);
+      // ラベルと値のペアを探す
+      // パターン: 同じ行にラベル（短いテキスト）と値がある
+      const allElements = mainContent.querySelectorAll('*');
+      const processedTexts = new Set<string>();
 
-        // 2つの直接の子要素がある場合
-        if (children.length === 2) {
-          const labelEl = children[0];
-          const valueEl = children[1];
+      allElements.forEach(el => {
+        const children = Array.from(el.children);
 
-          const labelText = labelEl.textContent?.trim().replace(/[:：]$/, '') || '';
-          const valueText = valueEl.textContent?.trim() || '';
+        // 直接の子要素が2〜3個で、最初が短いテキスト（ラベル）の場合
+        if (children.length >= 2 && children.length <= 4) {
+          const firstChild = children[0];
+          const secondChild = children[1];
 
-          // セクションヘッダーやタブ名は除外
-          if (labelText &&
-              !sectionHeaders.includes(labelText) &&
-              !tabNames.includes(labelText) &&
-              labelText.length < 50 && // ラベルは短いはず
-              !result[labelText]) {
+          const labelText = firstChild.textContent?.trim().replace(/[:：]$/, '') || '';
+          let valueText = secondChild.textContent?.trim() || '';
 
-            // 値が「-」の場合も保存（空データとして記録）
-            result[labelText] = valueText === '-' ? '' : valueText;
-          }
-        }
-      });
+          // ラベルが既知のフィールドか、または短いテキストでUI要素でない
+          const isKnownLabel = knownLabels.includes(labelText);
+          const isValidLabel = labelText.length > 0 && labelText.length < 30 &&
+                              !excludeTexts.some(ex => labelText.includes(ex)) &&
+                              !labelText.includes('件') && // "277件" のような表示を除外
+                              !/^\d+$/.test(labelText); // 数字のみは除外
 
-      // 方法2: テーブル行からも抽出
-      const tableRows = document.querySelectorAll('table tr');
-      tableRows.forEach(row => {
-        const cells = row.querySelectorAll('td, th');
-        if (cells.length >= 2) {
-          const labelText = cells[0].textContent?.trim().replace(/[:：]$/, '') || '';
-          const valueText = cells[1].textContent?.trim() || '';
-
-          if (labelText &&
-              !sectionHeaders.includes(labelText) &&
-              !tabNames.includes(labelText) &&
-              labelText.length < 50 &&
-              !result[labelText]) {
-            result[labelText] = valueText === '-' ? '' : valueText;
-          }
-        }
-      });
-
-      // 方法3: dl/dt/ddパターン
-      const dlElements = document.querySelectorAll('dl');
-      dlElements.forEach(dl => {
-        const dts = dl.querySelectorAll('dt');
-        const dds = dl.querySelectorAll('dd');
-        for (let i = 0; i < dts.length; i++) {
-          const labelText = dts[i].textContent?.trim().replace(/[:：]$/, '') || '';
-          const valueText = dds[i]?.textContent?.trim() || '';
-
-          if (labelText &&
-              !sectionHeaders.includes(labelText) &&
-              labelText.length < 50 &&
-              !result[labelText]) {
-            result[labelText] = valueText === '-' ? '' : valueText;
-          }
-        }
-      });
-
-      // 方法4: flexbox/grid行でラベルと値が分かれている場合
-      const flexRows = document.querySelectorAll('[style*="flex"], [style*="grid"], [class*="flex"], [class*="grid"]');
-      flexRows.forEach(row => {
-        const children = Array.from(row.children);
-        if (children.length === 2) {
-          const labelText = children[0].textContent?.trim().replace(/[:：]$/, '') || '';
-          const valueText = children[1].textContent?.trim() || '';
-
-          if (labelText &&
-              !sectionHeaders.includes(labelText) &&
-              !tabNames.includes(labelText) &&
-              labelText.length < 50 &&
-              !result[labelText]) {
-            result[labelText] = valueText === '-' ? '' : valueText;
+          if ((isKnownLabel || isValidLabel) && !processedTexts.has(labelText) && !result[labelText]) {
+            // 値が「-」や空の場合
+            if (valueText === '-' || valueText === '') {
+              valueText = '';
+            }
+            // 値がラベルと同じ場合はスキップ（誤検出）
+            if (valueText !== labelText && !excludeTexts.includes(valueText)) {
+              // 値が長すぎる場合は誤検出の可能性
+              if (valueText.length < 200) {
+                result[labelText] = valueText;
+                processedTexts.add(labelText);
+              }
+            }
           }
         }
       });
