@@ -831,11 +831,24 @@ async function main(): Promise<void> {
     console.log(`\n=== ${projects.length} 件の案件を処理します ===`);
 
     // 3. 各案件を順番に処理
+    let skippedCount = 0;
+    let processedCount = 0;
+
     for (let i = 0; i < projects.length; i++) {
       const project = projects[i];
+      const projectDir = path.join(DOWNLOAD_DIR, scraper['sanitizeFilename'](project.name));
+      const projectDataFile = path.join(projectDir, 'project_data.json');
+
       console.log(`\n========================================`);
       console.log(`案件 ${i + 1}/${projects.length}: [${project.id}] ${project.name}`);
       console.log(`========================================`);
+
+      // ダウンロード済みチェック: project_data.json が存在すればスキップ
+      if (fs.existsSync(projectDataFile)) {
+        console.log(`  → 既にダウンロード済み。スキップします。`);
+        skippedCount++;
+        continue;
+      }
 
       // 案件をクリックして詳細ページへ遷移
       await scraper.clickProject(project);
@@ -854,9 +867,8 @@ async function main(): Promise<void> {
       const documents = await scraper.downloadDocuments(project.name);
 
       // 結果をJSONで保存
-      const resultDir = path.join(DOWNLOAD_DIR, scraper['sanitizeFilename'](project.name));
-      if (!fs.existsSync(resultDir)) {
-        fs.mkdirSync(resultDir, { recursive: true });
+      if (!fs.existsSync(projectDir)) {
+        fs.mkdirSync(projectDir, { recursive: true });
       }
 
       const result = {
@@ -868,17 +880,23 @@ async function main(): Promise<void> {
       };
 
       fs.writeFileSync(
-        path.join(resultDir, 'project_data.json'),
+        projectDataFile,
         JSON.stringify(result, null, 2),
         'utf-8'
       );
       console.log(`  データをproject_data.jsonに保存しました`);
+      processedCount++;
 
       // 案件一覧に戻る（最後の案件以外）
       if (i < projects.length - 1) {
         await scraper.backToProjectList();
       }
     }
+
+    console.log(`\n=== 処理完了 ===`);
+    console.log(`  処理した案件: ${processedCount} 件`);
+    console.log(`  スキップした案件: ${skippedCount} 件`);
+    console.log(`  合計: ${projects.length} 件`);
 
     console.log('\n=== 全ての処理が完了しました ===');
   } catch (error) {
