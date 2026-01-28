@@ -1,4 +1,4 @@
-import { chromium, Browser, Page, BrowserContext, ElementHandle } from 'playwright';
+import { chromium, Browser, Page, BrowserContext, ElementHandle, Locator } from 'playwright';
 import { config } from './config';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -14,7 +14,6 @@ export interface Project {
   id: string;
   name: string;
   url: string;
-  element?: ElementHandle;
 }
 
 export interface ProjectDetail {
@@ -89,8 +88,8 @@ class KannaScraper {
     console.log(`ログインページにアクセス: ${KANNA_LOGIN_URL}`);
     await this.page.goto(KANNA_LOGIN_URL);
 
-    // ページ読み込み後少し待機
-    await sleep(1000);
+    // ログインフォームが表示されるまで待機
+    await this.page.locator('input[type="email"]').waitFor({ state: 'visible' });
 
     console.log('メールアドレスを入力中...');
     await this.page.fill('input[type="email"]', config.kannaEmail);
@@ -101,11 +100,12 @@ class KannaScraper {
     console.log('ログインボタンをクリック...');
     await this.page.click('button:has-text("ログインする")');
 
-    await this.page.waitForLoadState('networkidle');
+    // SPA: URLがsigninから変わるまで待機
+    console.log('ログイン処理を待機中...');
+    await this.page.waitForURL((url) => !url.pathname.includes('/signin'), { timeout: 30000 });
 
-    // ログイン後、5秒待機（ページ完全読み込みとbot検出回避）
-    console.log('ログイン後、5秒待機中...');
-    await sleep(5000);
+    // ダッシュボードの要素が表示されるまで待機
+    await sleep(2000);
 
     // デバッグ用スクリーンショット
     await this.saveScreenshot('after_login');
@@ -114,7 +114,7 @@ class KannaScraper {
     return true;
   }
 
-  // 左メニューの「案件一覧」をクリックして案件一覧ページへ遷移
+  // 左サイドバーの「案件一覧」をクリックして案件一覧ページへ遷移
   async navigateToProjectList(): Promise<void> {
     if (!this.page) throw new Error('ブラウザが初期化されていません');
 
@@ -123,94 +123,63 @@ class KannaScraper {
     // クリック前のスクリーンショット
     await this.saveScreenshot('before_click_menu');
 
-    // 現在のページのHTMLを確認（デバッグ用）
     const currentUrl = this.page.url();
     console.log(`  現在のURL: ${currentUrl}`);
 
-    // 緑のサイドバー内の「案件一覧」を特定するセレクタ
-    // ダッシュボードの「未完了の担当案件」ではなく、左メニューを狙う
-    const menuSelectors = [
-      // サイドバー/ナビゲーション内のリンク（優先）
-      'nav a:has-text("案件一覧")',
-      'aside a:has-text("案件一覧")',
-      '[role="navigation"] a:has-text("案件一覧")',
-      // 緑系のサイドバー（class名に基づく）
-      '[class*="sidebar"] a:has-text("案件一覧")',
-      '[class*="Sidebar"] a:has-text("案件一覧")',
-      '[class*="sidenav"] a:has-text("案件一覧")',
-      '[class*="SideNav"] a:has-text("案件一覧")',
-      '[class*="side-menu"] a:has-text("案件一覧")',
-      '[class*="leftMenu"] a:has-text("案件一覧")',
-      '[class*="left-menu"] a:has-text("案件一覧")',
-      '[class*="menu"] a:has-text("案件一覧")',
-      // アイコン付きのリンク（サイドバー特有）
-      'a:has(svg):has-text("案件一覧")',
-      'a:has(i):has-text("案件一覧")',
-      'a:has([class*="icon"]):has-text("案件一覧")',
-      // 左側に配置された要素（position: fixed/absolute）
-      '[style*="left"] a:has-text("案件一覧")',
-      // リストアイテム内のリンク
-      'li a:has-text("案件一覧")',
-      'ul a:has-text("案件一覧")',
-    ];
+    // Locator APIを使用してサイドバー内のメニューを探す
+    // サイドバー要素を特定
+    const sidebar = this.page.locator('aside, nav, [role="navigation"], [class*="sidebar"], [class*="Sidebar"]').first();
 
-    let clicked = false;
-    for (const selector of menuSelectors) {
-      try {
-        console.log(`  セレクタを試行: ${selector}`);
-        const menuItems = await this.page.$$(selector);
+    // サイドバー内の「案件一覧」リンクを探す
+    const menuLink = sidebar.getByRole('link', { name: '案件一覧' })
+      .or(sidebar.getByText('案件一覧', { exact: true }))
+      .or(sidebar.locator('a:has-text("案件一覧")'));
 
-        for (const menuItem of menuItems) {
-          // 要素が表示されているか確認
-          const isVisible = await menuItem.isVisible();
-          if (!isVisible) continue;
+    try {
+      // 要素が表示されるまで待機
+      await menuLink.first().waitFor({ state: 'visible', timeout: 10000 });
+      console.log('  サイドバー内の「案件一覧」を発見');
 
-          // 要素の位置を確認（左側にあるかどうか）
-          const box = await menuItem.boundingBox();
-          if (box && box.x < 300) { // 左から300px以内 = サイドバー
-            console.log(`  サイドバー内の要素を発見 (x=${box.x})`);
-            await menuItem.click();
-            clicked = true;
-            console.log(`  セレクタ "${selector}" でクリック成功`);
-            break;
-          } else if (box) {
-            console.log(`  要素は見つかったが右側にある (x=${box.x}): ${selector}`);
-          }
-        }
+      // クリック
+      await menuLink.first().click();
+      console.log('  クリック成功');
 
-        if (clicked) break;
-      } catch (e) {
-        // セレクタが無効な場合はスキップ
-      }
-    }
+      // SPA: URLが /cms を含むまで待機
+      await this.page.waitForURL(/\/cms/i, { timeout: 15000 });
+      console.log('  案件一覧ページに遷移完了');
 
-    // 上記で見つからない場合、位置ベースで探す
-    if (!clicked) {
-      console.log('  位置ベースで左メニューを探索中...');
+    } catch (e) {
+      // フォールバック: 位置ベースで探す
+      console.log('  Locatorで見つからず、位置ベースで探索...');
+
       const allLinks = await this.page.$$('a');
+      let clicked = false;
+
       for (const link of allLinks) {
         const text = await link.textContent();
         if (text && text.includes('案件一覧')) {
           const box = await link.boundingBox();
           const isVisible = await link.isVisible();
           if (isVisible && box && box.x < 300) {
-            console.log(`  位置ベースで発見 (x=${box.x}): "${text.trim()}"`);
+            console.log(`  位置ベースで発見 (x=${box.x})`);
             await link.click();
             clicked = true;
+
+            // URLの変化を待機
+            await this.page.waitForURL(/\/cms/i, { timeout: 15000 });
             break;
           }
         }
       }
+
+      if (!clicked) {
+        await this.saveScreenshot('error_menu_not_found');
+        throw new Error('左サイドバーの「案件一覧」が見つかりません');
+      }
     }
 
-    if (!clicked) {
-      // エラー時のスクリーンショット
-      await this.saveScreenshot('error_menu_not_found');
-      throw new Error('左サイドバーの「案件一覧」が見つかりません。スクリーンショットを確認してください。');
-    }
-
-    await this.page.waitForLoadState('networkidle');
-    await sleep(2000); // 遷移後に少し待機
+    // 遷移後少し待機してコンテンツの読み込みを待つ
+    await sleep(1000);
 
     // 遷移後のスクリーンショット
     await this.saveScreenshot('after_click_menu');
@@ -229,20 +198,21 @@ class KannaScraper {
     while (hasNextPage) {
       console.log(`ページ ${pageNum} を取得中...`);
 
+      // テーブルが表示されるまで待機
+      await sleep(1000);
+
       // テーブルの各行から案件を取得
       const rows = await this.page.$$('table tbody tr, [class*="table"] [class*="row"], [class*="list"] [class*="item"]');
 
       if (rows.length > 0) {
         for (let i = 0; i < rows.length; i++) {
           const row = rows[i];
-          // 行内のリンクまたはクリック可能な要素から案件名を取得
           const nameEl = await row.$('a, [class*="name"], [class*="title"], td:first-child');
           if (nameEl) {
             const name = await nameEl.textContent();
             const href = await nameEl.getAttribute('href');
 
             if (name && name.trim()) {
-              // IDはhrefから取得、なければインデックスを使用
               let id = `${pageNum}-${i}`;
               if (href) {
                 const idMatch = href.match(/\/(\d+)/) || href.match(/id=(\d+)/);
@@ -284,7 +254,7 @@ class KannaScraper {
         const ariaDisabled = await nextButton.getAttribute('aria-disabled');
         if (!isDisabled && ariaDisabled !== 'true') {
           await nextButton.click();
-          await this.page.waitForLoadState('networkidle');
+          await sleep(1000); // SPA: 固定待機
           pageNum++;
         } else {
           hasNextPage = false;
@@ -302,14 +272,8 @@ class KannaScraper {
   async backToProjectList(): Promise<void> {
     if (!this.page) throw new Error('ブラウザが初期化されていません');
 
-    // 戻るボタンまたは左メニューから案件一覧に戻る
-    const backButton = await this.page.$('button:has-text("戻る"), a:has-text("戻る"), .back-button');
-    if (backButton) {
-      await backButton.click();
-    } else {
-      await this.navigateToProjectList();
-    }
-    await this.page.waitForLoadState('networkidle');
+    // サイドバーから案件一覧をクリック
+    await this.navigateToProjectList();
   }
 
   // 案件をクリックして詳細ページに遷移
@@ -318,63 +282,52 @@ class KannaScraper {
 
     console.log(`\n案件をクリック: ${project.name}`);
 
-    // テーブル内から案件名を探してクリック
-    const selectors = [
-      // テーブル内のテキスト一致
-      `table >> text="${project.name}"`,
-      `tr >> text="${project.name}"`,
-      // リンクでの一致
-      `a:has-text("${project.name}")`,
-      // 部分一致
-      `text="${project.name}"`,
-    ];
+    // Locator APIで案件名を探す
+    const projectLink = this.page.locator(`a:has-text("${project.name}")`).first()
+      .or(this.page.locator(`text="${project.name}"`).first());
 
-    let clicked = false;
-    for (const selector of selectors) {
-      try {
-        const element = await this.page.$(selector);
-        if (element) {
-          await element.click();
-          clicked = true;
-          break;
-        }
-      } catch {
-        // セレクタが無効な場合はスキップ
+    try {
+      await projectLink.waitFor({ state: 'visible', timeout: 5000 });
+      await projectLink.click();
+
+      // 詳細ページへの遷移を待機（URLの変化またはタブの出現）
+      await sleep(2000);
+
+      console.log('案件詳細ページに遷移しました');
+    } catch {
+      if (project.url) {
+        console.log('  リンクが見つからないためURLに直接遷移');
+        await this.page.goto(project.url);
+        await sleep(2000);
       }
     }
-
-    if (!clicked && project.url) {
-      // リンクが見つからない場合はURLに直接遷移
-      console.log('  リンクが見つからないためURLに直接遷移');
-      await this.page.goto(project.url);
-    }
-
-    await this.page.waitForLoadState('networkidle');
-    console.log('案件詳細ページに遷移しました');
   }
 
-  // 1. 概要タブの全項目を自動検出して取得
+  // 概要タブの全項目を自動検出して取得
   async getProjectDetails(): Promise<ProjectDetail> {
     if (!this.page) throw new Error('ブラウザが初期化されていません');
 
     console.log('  概要タブを開く...');
 
-    // 概要タブをクリック（既に選択されている場合もある）
-    const overviewTab = await this.page.$('button:has-text("概要"), a:has-text("概要"), [role="tab"]:has-text("概要"), .tab:has-text("概要")');
-    if (overviewTab) {
-      await overviewTab.click();
-      await this.page.waitForLoadState('networkidle');
+    // 概要タブを探してクリック
+    const overviewTab = this.page.locator('button:has-text("概要"), a:has-text("概要"), [role="tab"]:has-text("概要")').first();
+
+    try {
+      const isVisible = await overviewTab.isVisible();
+      if (isVisible) {
+        await overviewTab.click();
+        await sleep(1000);
+      }
+    } catch {
+      // 概要タブがない場合はスキップ
     }
 
     const details: ProjectDetail = {};
 
-    // ラベル：値のペアを自動検出（複数のパターンに対応）
+    // ラベル：値のペアを自動検出
     const patterns = [
-      // パターン1: dl > dt + dd
       { container: 'dl', label: 'dt', value: 'dd' },
-      // パターン2: table > tr > th + td
       { container: 'table', label: 'th', value: 'td' },
-      // パターン3: div内のラベルと値
       { container: '.detail-item, .info-item, .field-group', label: '.label, .field-label, .item-label', value: '.value, .field-value, .item-value' },
     ];
 
@@ -396,14 +349,13 @@ class KannaScraper {
       }
     }
 
-    // 汎用的なキー・バリュー検出（ラベル要素の次の兄弟要素）
+    // 汎用的なキー・バリュー検出
     const labelElements = await this.page.$$('[class*="label"], [class*="Label"], label');
     for (const labelEl of labelElements) {
       const labelText = await labelEl.textContent();
       if (labelText && labelText.trim()) {
         const key = labelText.trim().replace(/[:：]$/, '');
         if (!details[key]) {
-          // 次の兄弟要素から値を取得
           const valueText = await labelEl.evaluate((el) => {
             const next = el.nextElementSibling;
             return next ? next.textContent : '';
@@ -419,7 +371,7 @@ class KannaScraper {
     return details;
   }
 
-  // 2. 写真タブからフォルダ一覧と写真をダウンロード
+  // 写真タブからフォルダ一覧と写真をダウンロード
   async downloadPhotos(projectName: string): Promise<FolderItem[]> {
     if (!this.page) throw new Error('ブラウザが初期化されていません');
 
@@ -430,15 +382,22 @@ class KannaScraper {
 
     console.log(`  写真タブを開く...`);
 
-    // 写真タブをクリック
-    const photoTab = await this.page.$('button:has-text("写真"), a:has-text("写真"), [role="tab"]:has-text("写真"), .tab:has-text("写真")');
-    if (!photoTab) {
+    // 写真タブを探す
+    const photoTab = this.page.locator('button:has-text("写真"), a:has-text("写真"), [role="tab"]:has-text("写真")').first();
+
+    try {
+      const isVisible = await photoTab.isVisible();
+      if (!isVisible) {
+        console.log('  写真タブが見つかりません');
+        return [];
+      }
+
+      await photoTab.click();
+      await sleep(1500);
+    } catch {
       console.log('  写真タブが見つかりません');
       return [];
     }
-
-    await photoTab.click();
-    await this.page.waitForLoadState('networkidle');
 
     const folders: FolderItem[] = [];
 
@@ -446,7 +405,6 @@ class KannaScraper {
     const folderElements = await this.page.$$('.folder, .folder-item, [data-testid="folder"], a[href*="folder"], .directory');
 
     if (folderElements.length === 0) {
-      // フォルダがない場合、直接写真をダウンロード
       console.log('  フォルダなし、直接写真を取得...');
       const files = await this.downloadImagesFromCurrentView(projectDir, 'root');
       if (files.length > 0) {
@@ -466,21 +424,21 @@ class KannaScraper {
 
         console.log(`    フォルダ: ${safeFolderName}`);
 
-        // フォルダをクリックして中身を表示
         await folderEl.click();
-        await this.page.waitForLoadState('networkidle');
+        await sleep(1000);
 
         const files = await this.downloadImagesFromCurrentView(folderDir, safeFolderName);
         folders.push({ name: safeFolderName, files });
 
-        // 戻るボタンまたは写真タブを再クリック
+        // 戻る
         const backButton = await this.page.$('button:has-text("戻る"), a:has-text("戻る"), .back-button');
         if (backButton) {
           await backButton.click();
+          await sleep(500);
         } else {
           await photoTab.click();
+          await sleep(500);
         }
-        await this.page.waitForLoadState('networkidle');
       }
     }
 
@@ -489,7 +447,7 @@ class KannaScraper {
     return folders;
   }
 
-  // 3. 資料タブからフォルダ一覧とファイルをダウンロード
+  // 資料タブからフォルダ一覧とファイルをダウンロード
   async downloadDocuments(projectName: string): Promise<FolderItem[]> {
     if (!this.page) throw new Error('ブラウザが初期化されていません');
 
@@ -500,15 +458,22 @@ class KannaScraper {
 
     console.log(`  資料タブを開く...`);
 
-    // 資料タブをクリック
-    const docTab = await this.page.$('button:has-text("資料"), a:has-text("資料"), [role="tab"]:has-text("資料"), .tab:has-text("資料")');
-    if (!docTab) {
+    // 資料タブを探す
+    const docTab = this.page.locator('button:has-text("資料"), a:has-text("資料"), [role="tab"]:has-text("資料")').first();
+
+    try {
+      const isVisible = await docTab.isVisible();
+      if (!isVisible) {
+        console.log('  資料タブが見つかりません');
+        return [];
+      }
+
+      await docTab.click();
+      await sleep(1500);
+    } catch {
       console.log('  資料タブが見つかりません');
       return [];
     }
-
-    await docTab.click();
-    await this.page.waitForLoadState('networkidle');
 
     const folders: FolderItem[] = [];
 
@@ -516,7 +481,6 @@ class KannaScraper {
     const folderElements = await this.page.$$('.folder, .folder-item, [data-testid="folder"], a[href*="folder"], .directory');
 
     if (folderElements.length === 0) {
-      // フォルダがない場合、直接ファイルをダウンロード
       console.log('  フォルダなし、直接ファイルを取得...');
       const files = await this.downloadFilesFromCurrentView(projectDir, 'root');
       if (files.length > 0) {
@@ -536,21 +500,21 @@ class KannaScraper {
 
         console.log(`    フォルダ: ${safeFolderName}`);
 
-        // フォルダをクリックして中身を表示
         await folderEl.click();
-        await this.page.waitForLoadState('networkidle');
+        await sleep(1000);
 
         const files = await this.downloadFilesFromCurrentView(folderDir, safeFolderName);
         folders.push({ name: safeFolderName, files });
 
-        // 戻るボタンまたは資料タブを再クリック
+        // 戻る
         const backButton = await this.page.$('button:has-text("戻る"), a:has-text("戻る"), .back-button');
         if (backButton) {
           await backButton.click();
+          await sleep(500);
         } else {
           await docTab.click();
+          await sleep(500);
         }
-        await this.page.waitForLoadState('networkidle');
       }
     }
 
@@ -565,10 +529,7 @@ class KannaScraper {
 
     const downloadedFiles: string[] = [];
 
-    // 画像要素を取得
     const imageElements = await this.page.$$('img[src*="/photo"], img[src*="/image"], img[src*="storage"], .photo-item img, .gallery-item img');
-
-    // ダウンロードリンクも探す
     const downloadLinks = await this.page.$$('a[href*="download"], a[download], button:has-text("ダウンロード")');
 
     if (imageElements.length > 0) {
@@ -583,7 +544,6 @@ class KannaScraper {
             const filename = `photo_${i + 1}${this.getExtension(src, '.jpg')}`;
             const filepath = path.join(dir, filename);
 
-            // 画像をダウンロード
             const response = await this.page.request.get(src);
             const buffer = await response.body();
             fs.writeFileSync(filepath, buffer);
@@ -596,7 +556,6 @@ class KannaScraper {
       }
     }
 
-    // ダウンロードリンクからもダウンロード
     for (const link of downloadLinks) {
       try {
         const [download] = await Promise.all([
@@ -609,7 +568,7 @@ class KannaScraper {
         await download.saveAs(filepath);
         downloadedFiles.push(filename);
       } catch {
-        // ダウンロードイベントがない場合はスキップ
+        // スキップ
       }
     }
 
@@ -622,20 +581,15 @@ class KannaScraper {
 
     const downloadedFiles: string[] = [];
 
-    // ファイルリンクを取得
     const fileLinks = await this.page.$$('a[href*="download"], a[download], a[href$=".pdf"], a[href$=".doc"], a[href$=".docx"], a[href$=".xls"], a[href$=".xlsx"], .file-item a, .document-item a');
-
-    // ダウンロードボタンも探す
     const downloadButtons = await this.page.$$('button:has-text("ダウンロード"), button[aria-label*="download"], .download-button');
 
     console.log(`      ${fileLinks.length} 個のファイルリンクを検出`);
 
     for (const link of fileLinks) {
       try {
-        const href = await link.getAttribute('href');
         const linkText = await link.textContent();
 
-        // ダウンロードを試行
         const [download] = await Promise.all([
           this.page.waitForEvent('download', { timeout: 10000 }),
           link.click(),
@@ -648,7 +602,6 @@ class KannaScraper {
         downloadedFiles.push(safeFilename);
         console.log(`        ダウンロード: ${safeFilename}`);
       } catch {
-        // ダウンロードに失敗した場合はfetchでダウンロード
         const href = await link.getAttribute('href');
         if (href) {
           try {
@@ -665,7 +618,6 @@ class KannaScraper {
       }
     }
 
-    // ダウンロードボタンからもダウンロード
     for (const btn of downloadButtons) {
       try {
         const [download] = await Promise.all([
