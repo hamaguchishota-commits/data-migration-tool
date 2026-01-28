@@ -522,39 +522,20 @@ class KannaScraper {
     return projects;
   }
 
-  // 案件一覧ページに戻る
-  async backToProjectList(): Promise<void> {
+  // 案件詳細ページに直接遷移（URLを使用）
+  async goToProject(project: Project): Promise<void> {
     if (!this.page) throw new Error('ブラウザが初期化されていません');
 
-    // サイドバーから案件一覧をクリック
-    await this.navigateToProjectList();
-  }
+    console.log(`\n案件に遷移: ${project.name}`);
+    console.log(`  URL: ${project.url}`);
 
-  // 案件をクリックして詳細ページに遷移
-  async clickProject(project: Project): Promise<void> {
-    if (!this.page) throw new Error('ブラウザが初期化されていません');
+    // URLに直接遷移（スクロール不要）
+    await this.page.goto(project.url);
 
-    console.log(`\n案件をクリック: ${project.name}`);
+    // ページの読み込みを待機
+    await sleep(2000);
 
-    // Locator APIで案件名を探す
-    const projectLink = this.page.locator(`a:has-text("${project.name}")`).first()
-      .or(this.page.locator(`text="${project.name}"`).first());
-
-    try {
-      await projectLink.waitFor({ state: 'visible', timeout: 5000 });
-      await projectLink.click();
-
-      // 詳細ページへの遷移を待機（URLの変化またはタブの出現）
-      await sleep(2000);
-
-      console.log('案件詳細ページに遷移しました');
-    } catch {
-      if (project.url) {
-        console.log('  リンクが見つからないためURLに直接遷移');
-        await this.page.goto(project.url);
-        await sleep(2000);
-      }
-    }
+    console.log('案件詳細ページに遷移しました');
   }
 
   // KANNA AIチャットボットを閉じる
@@ -601,31 +582,72 @@ class KannaScraper {
   private async clickTab(tabName: string): Promise<boolean> {
     if (!this.page) return false;
 
+    // ページの読み込みを待機
+    await sleep(500);
+
     try {
-      // MUIボタンのタブを探す（メインコンテンツ領域内）
-      // 完全一致でタブ名を探す
-      const tabButton = this.page.locator(`button:has-text("${tabName}")`).first();
+      // 方法1: page.evaluateでボタンを探してクリック（最も確実）
+      const clicked = await this.page.evaluate((name) => {
+        // 全てのボタン要素を取得
+        const buttons = Array.from(document.querySelectorAll('button'));
+        for (let i = 0; i < buttons.length; i++) {
+          const btn = buttons[i];
+          const text = btn.textContent?.trim();
+          // 完全一致または含む
+          if (text === name || text?.includes(name)) {
+            // サイドバー内のボタンは除外（x座標が200px以下）
+            const rect = btn.getBoundingClientRect();
+            if (rect.x > 200 && rect.width > 0) {
+              btn.click();
+              return true;
+            }
+          }
+        }
+        return false;
+      }, tabName);
 
-      // タブが表示されるまで待機（最大3秒）
-      await tabButton.waitFor({ state: 'visible', timeout: 3000 });
+      if (clicked) {
+        await sleep(1000);
+        console.log(`  ${tabName}タブをクリック`);
+        return true;
+      }
 
-      // クリック
-      await tabButton.click();
-      await sleep(1000);
-
-      console.log(`  ${tabName}タブをクリック`);
-      return true;
-
-    } catch (e) {
-      // フォールバック: テキストで直接探す
+      // 方法2: spanを含むボタンを探す（MUIボタン構造）
+      const tabButton = this.page.locator(`button:has(span:text-is("${tabName}"))`).first();
       try {
-        const allButtons = await this.page.$$('button');
-        for (const btn of allButtons) {
-          const text = await btn.textContent();
-          if (text && text.trim() === tabName) {
-            await btn.click();
+        await tabButton.waitFor({ state: 'visible', timeout: 2000 });
+        await tabButton.click();
+        await sleep(1000);
+        console.log(`  ${tabName}タブをクリック（span検索）`);
+        return true;
+      } catch {
+        // 次の方法を試す
+      }
+
+      // 方法3: getByRole + name
+      try {
+        const roleTab = this.page.getByRole('button', { name: tabName });
+        await roleTab.first().waitFor({ state: 'visible', timeout: 2000 });
+        await roleTab.first().click();
+        await sleep(1000);
+        console.log(`  ${tabName}タブをクリック（role検索）`);
+        return true;
+      } catch {
+        // 次の方法を試す
+      }
+
+      // 方法4: テキストで直接探す
+      try {
+        const textTab = this.page.getByText(tabName, { exact: true });
+        const count = await textTab.count();
+        for (let i = 0; i < count; i++) {
+          const el = textTab.nth(i);
+          const box = await el.boundingBox();
+          // メインコンテンツ領域内のみ（x > 200）
+          if (box && box.x > 200) {
+            await el.click();
             await sleep(1000);
-            console.log(`  ${tabName}タブをクリック（フォールバック）`);
+            console.log(`  ${tabName}タブをクリック（text検索）`);
             return true;
           }
         }
@@ -634,6 +656,10 @@ class KannaScraper {
       }
 
       console.log(`  ${tabName}タブが見つかりません`);
+      return false;
+
+    } catch (e) {
+      console.log(`  ${tabName}タブエラー: ${e}`);
       return false;
     }
   }
@@ -1932,8 +1958,8 @@ async function main(): Promise<void> {
         continue;
       }
 
-      // 案件をクリックして詳細ページへ遷移
-      await scraper.clickProject(project);
+      // 案件詳細ページに直接遷移（URL使用、スクロール不要）
+      await scraper.goToProject(project);
 
       // 概要タブの項目を取得
       const details = await scraper.getProjectDetails();
@@ -1991,10 +2017,7 @@ async function main(): Promise<void> {
       console.log(`  データをproject_data.jsonに保存しました`);
       processedCount++;
 
-      // 案件一覧に戻る（最後の案件以外）
-      if (i < projects.length - 1) {
-        await scraper.backToProjectList();
-      }
+      // 次の案件はURL直接アクセスなので、案件一覧に戻る必要なし
     }
 
     console.log(`\n=== 処理完了 ===`);
