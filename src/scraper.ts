@@ -597,6 +597,47 @@ class KannaScraper {
     }
   }
 
+  // タブをクリックする共通関数（MUIボタン対応）
+  private async clickTab(tabName: string): Promise<boolean> {
+    if (!this.page) return false;
+
+    try {
+      // MUIボタンのタブを探す（メインコンテンツ領域内）
+      // 完全一致でタブ名を探す
+      const tabButton = this.page.locator(`button:has-text("${tabName}")`).first();
+
+      // タブが表示されるまで待機（最大3秒）
+      await tabButton.waitFor({ state: 'visible', timeout: 3000 });
+
+      // クリック
+      await tabButton.click();
+      await sleep(1000);
+
+      console.log(`  ${tabName}タブをクリック`);
+      return true;
+
+    } catch (e) {
+      // フォールバック: テキストで直接探す
+      try {
+        const allButtons = await this.page.$$('button');
+        for (const btn of allButtons) {
+          const text = await btn.textContent();
+          if (text && text.trim() === tabName) {
+            await btn.click();
+            await sleep(1000);
+            console.log(`  ${tabName}タブをクリック（フォールバック）`);
+            return true;
+          }
+        }
+      } catch {
+        // ignore
+      }
+
+      console.log(`  ${tabName}タブが見つかりません`);
+      return false;
+    }
+  }
+
   // 概要タブの全項目を自動検出して取得（会社ごとの設定に対応）
   async getProjectDetails(): Promise<ProjectDetail> {
     if (!this.page) throw new Error('ブラウザが初期化されていません');
@@ -606,35 +647,8 @@ class KannaScraper {
 
     console.log('  概要タブを開く...');
 
-    // 概要タブを探してクリック（複数のセレクタを試す）
-    try {
-      // タブはページ上部にある横並びのボタン/リンク
-      const tabSelectors = [
-        '[role="tab"]:has-text("概要")',
-        '[role="tablist"] button:has-text("概要")',
-        '[role="tablist"] a:has-text("概要")',
-        'button[aria-selected]:has-text("概要")',
-        'nav button:has-text("概要")',
-        'nav a:has-text("概要")',
-      ];
-
-      for (const selector of tabSelectors) {
-        const tab = this.page.locator(selector).first();
-        try {
-          const isVisible = await tab.isVisible({ timeout: 1000 });
-          if (isVisible) {
-            await tab.click();
-            await sleep(1000);
-            console.log('  概要タブをクリック');
-            break;
-          }
-        } catch {
-          continue;
-        }
-      }
-    } catch {
-      // 概要タブがない場合や既に選択されている場合はスキップ
-    }
+    // 概要タブをクリック（MUIボタン対応）
+    await this.clickTab('概要');
 
     // デバッグ用スクリーンショット
     await this.saveScreenshot('project_detail_page');
@@ -742,20 +756,9 @@ class KannaScraper {
 
     console.log(`  写真タブを開く...`);
 
-    // 写真タブを探す
-    const photoTab = this.page.locator('button:has-text("写真"), a:has-text("写真"), [role="tab"]:has-text("写真")').first();
-
-    try {
-      const isVisible = await photoTab.isVisible();
-      if (!isVisible) {
-        console.log('  写真タブが見つかりません');
-        return [];
-      }
-
-      await photoTab.click();
-      await sleep(1500);
-    } catch {
-      console.log('  写真タブが見つかりません');
+    // 写真タブをクリック
+    const tabClicked = await this.clickTab('写真');
+    if (!tabClicked) {
       return [];
     }
 
@@ -879,20 +882,9 @@ class KannaScraper {
 
     console.log(`  資料タブを開く...`);
 
-    // 資料タブを探す
-    const docTab = this.page.locator('button:has-text("資料"), a:has-text("資料"), [role="tab"]:has-text("資料")').first();
-
-    try {
-      const isVisible = await docTab.isVisible();
-      if (!isVisible) {
-        console.log('  資料タブが見つかりません');
-        return [];
-      }
-
-      await docTab.click();
-      await sleep(1500);
-    } catch {
-      console.log('  資料タブが見つかりません');
+    // 資料タブをクリック
+    const tabClicked = await this.clickTab('資料');
+    if (!tabClicked) {
       return [];
     }
 
@@ -1136,20 +1128,9 @@ class KannaScraper {
     console.log('  報告タブを開く...');
     const reports: any[] = [];
 
-    // 報告タブを探す
-    const reportTab = this.page.locator('button:has-text("報告"), a:has-text("報告"), [role="tab"]:has-text("報告")').first();
-
-    try {
-      const isVisible = await reportTab.isVisible();
-      if (!isVisible) {
-        console.log('  報告タブが見つかりません');
-        return [];
-      }
-
-      await reportTab.click();
-      await sleep(1500);
-    } catch {
-      console.log('  報告タブが見つかりません');
+    // 報告タブをクリック
+    const tabClicked = await this.clickTab('報告');
+    if (!tabClicked) {
       return [];
     }
 
@@ -1363,22 +1344,13 @@ class KannaScraper {
     console.log('  工程表タブを開く...');
     const downloadedFiles: string[] = [];
 
-    // 工程表タブを探す
-    const scheduleTab = this.page.locator('button:has-text("工程表"), a:has-text("工程表"), [role="tab"]:has-text("工程表")').first();
-
-    try {
-      const isVisible = await scheduleTab.isVisible();
-      if (!isVisible) {
-        console.log('  工程表タブが見つかりません');
-        return [];
-      }
-
-      await scheduleTab.click();
-      await sleep(1500);
-    } catch {
-      console.log('  工程表タブが見つかりません');
+    // 工程表タブをクリック
+    const tabClicked = await this.clickTab('工程表');
+    if (!tabClicked) {
       return [];
     }
+
+    await sleep(500);
 
     // Excel出力ボタンを探してクリック
     const excelBtn = await this.page.$('button:has-text("Excel出力"), button:has-text("Excel"), a:has-text("Excel出力"), a:has-text("Excel")');
@@ -1415,22 +1387,13 @@ class KannaScraper {
     console.log('  タスクタブを開く...');
     const tasks: any[] = [];
 
-    // タスクタブを探す
-    const taskTab = this.page.locator('button:has-text("タスク"), a:has-text("タスク"), [role="tab"]:has-text("タスク")').first();
-
-    try {
-      const isVisible = await taskTab.isVisible();
-      if (!isVisible) {
-        console.log('  タスクタブが見つかりません');
-        return [];
-      }
-
-      await taskTab.click();
-      await sleep(1500);
-    } catch {
-      console.log('  タスクタブが見つかりません');
+    // タスクタブをクリック
+    const tabClicked = await this.clickTab('タスク');
+    if (!tabClicked) {
       return [];
     }
+
+    await sleep(500);
 
     // タスクリストの行を取得
     const taskRows = await this.page.$$('table tbody tr, [class*="list"] [class*="item"], [class*="task"] [class*="row"], [class*="row"]:has([class*="task"]), [class*="todo"], [class*="checklist"] [class*="item"]');
@@ -1522,22 +1485,13 @@ class KannaScraper {
 
     console.log('  帳票タブを開く...');
 
-    // 帳票タブを探す
-    const formsTab = this.page.locator('button:has-text("帳票"), a:has-text("帳票"), [role="tab"]:has-text("帳票")').first();
-
-    try {
-      const isVisible = await formsTab.isVisible();
-      if (!isVisible) {
-        console.log('  帳票タブが見つかりません');
-        return [];
-      }
-
-      await formsTab.click();
-      await sleep(1500);
-    } catch {
-      console.log('  帳票タブが見つかりません');
+    // 帳票タブをクリック
+    const tabClicked = await this.clickTab('帳票');
+    if (!tabClicked) {
       return [];
     }
+
+    await sleep(500);
 
     const folders: FolderItem[] = [];
 
@@ -1596,14 +1550,14 @@ class KannaScraper {
         if (topLink) {
           await topLink.click();
         } else {
-          await formsTab.click();
+          await this.clickTab('帳票');
         }
         await sleep(1000);
 
       } catch (e) {
         console.log(`      フォルダ処理エラー: ${e}`);
         try {
-          await formsTab.click();
+          await this.clickTab('帳票');
           await sleep(500);
         } catch {}
       }
@@ -1696,22 +1650,13 @@ class KannaScraper {
 
     console.log('  写真台帳タブを開く...');
 
-    // 写真台帳タブを探す
-    const ledgerTab = this.page.locator('button:has-text("写真台帳"), a:has-text("写真台帳"), [role="tab"]:has-text("写真台帳")').first();
-
-    try {
-      const isVisible = await ledgerTab.isVisible();
-      if (!isVisible) {
-        console.log('  写真台帳タブが見つかりません');
-        return [];
-      }
-
-      await ledgerTab.click();
-      await sleep(1500);
-    } catch {
-      console.log('  写真台帳タブが見つかりません');
+    // 写真台帳タブをクリック
+    const tabClicked = await this.clickTab('写真台帳');
+    if (!tabClicked) {
       return [];
     }
+
+    await sleep(500);
 
     const downloadedFiles: string[] = [];
 
@@ -1786,22 +1731,13 @@ class KannaScraper {
     console.log('  担当タブを開く...');
     const staffList: any[] = [];
 
-    // 担当タブを探す
-    const staffTab = this.page.locator('button:has-text("担当"), a:has-text("担当"), [role="tab"]:has-text("担当")').first();
-
-    try {
-      const isVisible = await staffTab.isVisible();
-      if (!isVisible) {
-        console.log('  担当タブが見つかりません');
-        return [];
-      }
-
-      await staffTab.click();
-      await sleep(1500);
-    } catch {
-      console.log('  担当タブが見つかりません');
+    // 担当タブをクリック
+    const tabClicked = await this.clickTab('担当');
+    if (!tabClicked) {
       return [];
     }
+
+    await sleep(500);
 
     // 担当者データを抽出（カード形式：名前、会社|役割、電話番号）
     const staffData = await this.page.evaluate(() => {
