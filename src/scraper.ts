@@ -220,12 +220,17 @@ class KannaScraper {
     const projects: Project[] = [];
     let hasNextPage = true;
     let pageNum = 1;
+    const MAX_PAGES = 100; // 安全のため最大ページ数を制限
+    let previousProjectCount = 0;
+    let sameCountStreak = 0; // 同じ件数が続いた回数
 
-    while (hasNextPage) {
+    while (hasNextPage && pageNum <= MAX_PAGES) {
       console.log(`ページ ${pageNum} を取得中...`);
 
       // テーブルが表示されるまで待機
       await sleep(1000);
+
+      const beforeCount = projects.length;
 
       // テーブルの各行から案件を取得
       const rows = await this.page.$$('table tbody tr, [class*="table"] [class*="row"], [class*="list"] [class*="item"]');
@@ -273,21 +278,57 @@ class KannaScraper {
         }
       }
 
+      const afterCount = projects.length;
+      const newProjectsFound = afterCount - beforeCount;
+      console.log(`  → ${newProjectsFound} 件の新規案件を発見 (合計: ${afterCount} 件)`);
+
+      // 新規案件が見つからなかった場合のチェック
+      if (afterCount === previousProjectCount) {
+        sameCountStreak++;
+        console.log(`  → 新規案件なし (${sameCountStreak}回連続)`);
+        if (sameCountStreak >= 3) {
+          console.log('  → 3回連続で新規案件なし、ページネーション終了');
+          hasNextPage = false;
+          break;
+        }
+      } else {
+        sameCountStreak = 0;
+      }
+      previousProjectCount = afterCount;
+
       // 次のページがあるかチェック
-      const nextButton = await this.page.$('button:has-text("次"), a:has-text("次"), [aria-label="Next"], .pagination-next:not([disabled]), [class*="next"]:not([disabled])');
+      const nextButton = await this.page.$('button:has-text("次へ"), a:has-text("次へ"), button:has-text("次のページ"), a:has-text("次のページ"), [aria-label="Next page"], .pagination-next:not([disabled])');
       if (nextButton) {
         const isDisabled = await nextButton.getAttribute('disabled');
         const ariaDisabled = await nextButton.getAttribute('aria-disabled');
-        if (!isDisabled && ariaDisabled !== 'true') {
+        const isVisible = await nextButton.isVisible();
+
+        console.log(`  → 次へボタン: visible=${isVisible}, disabled=${isDisabled}, aria-disabled=${ariaDisabled}`);
+
+        if (isVisible && !isDisabled && ariaDisabled !== 'true') {
+          const currentUrl = this.page.url();
           await nextButton.click();
-          await sleep(1000); // SPA: 固定待機
+          await sleep(1500); // SPA: 固定待機
+
+          // URLが変わったかチェック
+          const newUrl = this.page.url();
+          if (currentUrl === newUrl) {
+            console.log('  → URLが変わらず、ページネーション終了の可能性');
+          }
+
           pageNum++;
         } else {
+          console.log('  → 次へボタンが無効、ページネーション終了');
           hasNextPage = false;
         }
       } else {
+        console.log('  → 次へボタンが見つからず、ページネーション終了');
         hasNextPage = false;
       }
+    }
+
+    if (pageNum > MAX_PAGES) {
+      console.log(`警告: 最大ページ数 (${MAX_PAGES}) に達しました`);
     }
 
     console.log(`${projects.length} 件の案件を取得しました`);
