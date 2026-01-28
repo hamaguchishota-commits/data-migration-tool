@@ -508,7 +508,8 @@ class KannaScraper {
     return details;
   }
 
-  // 写真タブからフォルダ一覧と写真をダウンロード
+  // 写真タブからカテゴリ一覧と写真をダウンロード（KANNA専用）
+  // カテゴリは会社ごとにカスタマイズ可能なので動的に取得
   async downloadPhotos(projectName: string): Promise<FolderItem[]> {
     if (!this.page) throw new Error('ブラウザが初期化されていません');
 
@@ -538,50 +539,206 @@ class KannaScraper {
 
     const folders: FolderItem[] = [];
 
-    // フォルダ一覧を取得
-    const folderElements = await this.page.$$('.folder, .folder-item, [data-testid="folder"], a[href*="folder"], .directory');
+    // KANNA: カテゴリ（フォルダ）行を取得
+    // テーブル形式: 項目、写真枚数、公開範囲、撮影日時、追加日時
+    // フォルダアイコン付きの行を探す
+    const categoryRows = await this.page.$$('table tbody tr');
 
-    if (folderElements.length === 0) {
-      console.log('  フォルダなし、直接写真を取得...');
-      const files = await this.downloadImagesFromCurrentView(projectDir, 'root');
-      if (files.length > 0) {
-        folders.push({ name: 'root', files });
+    if (categoryRows.length > 0) {
+      console.log(`  ${categoryRows.length} 個のカテゴリを検出`);
+
+      for (let i = 0; i < categoryRows.length; i++) {
+        try {
+          // 再取得（SPAでDOM変わる可能性）
+          const currentRows = await this.page.$$('table tbody tr');
+          if (i >= currentRows.length) break;
+
+          const row = currentRows[i];
+
+          // カテゴリ名を取得（最初のセルまたはリンク）
+          const categoryName = await row.evaluate((el) => {
+            const nameCell = el.querySelector('td:first-child a, td:first-child, [class*="name"]');
+            return nameCell?.textContent?.trim() || '';
+          });
+
+          if (!categoryName) continue;
+
+          // 写真枚数を確認（0枚ならスキップ）
+          const photoCount = await row.evaluate((el) => {
+            const cells = el.querySelectorAll('td');
+            // 2番目のセルが写真枚数
+            if (cells.length >= 2) {
+              const text = cells[1].textContent?.trim() || '0';
+              const match = text.match(/(\d+)/);
+              return match ? parseInt(match[1], 10) : 0;
+            }
+            return 0;
+          });
+
+          if (photoCount === 0) {
+            console.log(`    カテゴリ: ${categoryName} (0枚、スキップ)`);
+            continue;
+          }
+
+          const safeCategoryName = this.sanitizeFilename(categoryName);
+          const categoryDir = path.join(projectDir, safeCategoryName);
+          if (!fs.existsSync(categoryDir)) {
+            fs.mkdirSync(categoryDir, { recursive: true });
+          }
+
+          console.log(`    カテゴリ: ${categoryName} (${photoCount}枚)`);
+
+          // カテゴリをクリックして中に入る
+          const categoryLink = await row.$('td:first-child a, td:first-child');
+          if (categoryLink) {
+            await categoryLink.click();
+          } else {
+            await row.click();
+          }
+          await sleep(1500);
+
+          // カテゴリ内の写真をダウンロード
+          const downloadedFiles = await this.downloadPhotosFromCategory(categoryDir);
+          folders.push({ name: safeCategoryName, files: downloadedFiles });
+
+          // カテゴリリストに戻る（「TOP」リンクまたは写真タブを再クリック）
+          const topLink = await this.page.$('a:has-text("TOP"), [class*="breadcrumb"] a:first-child');
+          if (topLink) {
+            await topLink.click();
+          } else {
+            await photoTab.click();
+          }
+          await sleep(1000);
+
+        } catch (e) {
+          console.log(`    カテゴリ処理エラー: ${e}`);
+          // 写真タブに戻る試み
+          try {
+            await photoTab.click();
+            await sleep(500);
+          } catch {}
+        }
       }
     } else {
-      console.log(`  ${folderElements.length} 個のフォルダを検出`);
-
-      for (const folderEl of folderElements) {
-        const folderName = await folderEl.textContent() || 'unnamed';
-        const safeFolderName = this.sanitizeFilename(folderName.trim());
-        const folderDir = path.join(projectDir, safeFolderName);
-
-        if (!fs.existsSync(folderDir)) {
-          fs.mkdirSync(folderDir, { recursive: true });
-        }
-
-        console.log(`    フォルダ: ${safeFolderName}`);
-
-        await folderEl.click();
-        await sleep(1000);
-
-        const files = await this.downloadImagesFromCurrentView(folderDir, safeFolderName);
-        folders.push({ name: safeFolderName, files });
-
-        // 戻る
-        const backButton = await this.page.$('button:has-text("戻る"), a:has-text("戻る"), .back-button');
-        if (backButton) {
-          await backButton.click();
-          await sleep(500);
-        } else {
-          await photoTab.click();
-          await sleep(500);
-        }
-      }
+      console.log('  カテゴリが見つかりません');
     }
 
     const totalFiles = folders.reduce((sum, f) => sum + f.files.length, 0);
-    console.log(`  写真: ${folders.length} フォルダ, ${totalFiles} ファイル`);
+    console.log(`  写真: ${folders.length} カテゴリ, ${totalFiles} ファイル`);
     return folders;
+  }
+
+  // カテゴリ内の写真をダウンロード（KANNA専用）
+  // 各行の「...」メニューから「ダウンロード」を選択
+  private async downloadPhotosFromCategory(dir: string): Promise<string[]> {
+    if (!this.page) return [];
+
+    const downloadedFiles: string[] = [];
+
+    // 写真行を取得
+    const photoRows = await this.page.$$('table tbody tr');
+
+    if (photoRows.length === 0) {
+      console.log(`      写真が見つかりません`);
+      return [];
+    }
+
+    console.log(`      ${photoRows.length} 枚の写真を検出`);
+
+    for (let i = 0; i < photoRows.length; i++) {
+      try {
+        // 再取得（SPAでDOM変わる可能性）
+        const currentRows = await this.page.$$('table tbody tr');
+        if (i >= currentRows.length) break;
+
+        const row = currentRows[i];
+
+        // ファイル名を取得
+        const fileName = await row.evaluate((el) => {
+          const nameCell = el.querySelector('td:first-child, [class*="name"], a');
+          return nameCell?.textContent?.trim() || '';
+        });
+
+        console.log(`        [${i + 1}/${photoRows.length}] ${fileName}`);
+
+        // 行の右端にある「...」メニューボタンを探してクリック
+        // KANNAでは行の最後の列に「...」ボタンがある
+        const menuBtn = await row.$('td:last-child button, td:last-child [class*="menu"], button[class*="more"], [aria-haspopup="menu"]');
+
+        if (menuBtn) {
+          await menuBtn.click();
+          await sleep(500);
+
+          // 「ダウンロード」メニュー項目をクリック
+          const downloadMenuItem = await this.page.$('[role="menuitem"]:has-text("ダウンロード"), [role="menu"] button:has-text("ダウンロード"), [class*="menu"] button:has-text("ダウンロード"), [class*="dropdown"] :has-text("ダウンロード"), li:has-text("ダウンロード"), a:has-text("ダウンロード")');
+
+          if (downloadMenuItem) {
+            try {
+              const [download] = await Promise.all([
+                this.page.waitForEvent('download', { timeout: 15000 }),
+                downloadMenuItem.click(),
+              ]);
+
+              const suggestedName = download.suggestedFilename();
+              const safeFilename = this.sanitizeFilename(suggestedName || fileName || `photo_${i + 1}.jpg`);
+              const filepath = path.join(dir, safeFilename);
+              await download.saveAs(filepath);
+              downloadedFiles.push(safeFilename);
+              console.log(`        ダウンロード完了: ${safeFilename}`);
+            } catch {
+              console.log(`        ダウンロード失敗（タイムアウト）`);
+              // メニューを閉じる
+              await this.page.keyboard.press('Escape');
+            }
+          } else {
+            console.log(`        ダウンロードメニューが見つかりません`);
+            // メニューを閉じる
+            await this.page.keyboard.press('Escape');
+          }
+        } else {
+          // メニューボタンがない場合、行末の「...」テキストを探す
+          const dotsBtn = await row.$('td:last-child');
+          if (dotsBtn) {
+            await dotsBtn.click();
+            await sleep(500);
+
+            const downloadMenuItem = await this.page.$('[role="menuitem"]:has-text("ダウンロード"), button:has-text("ダウンロード"), a:has-text("ダウンロード")');
+            if (downloadMenuItem) {
+              try {
+                const [download] = await Promise.all([
+                  this.page.waitForEvent('download', { timeout: 15000 }),
+                  downloadMenuItem.click(),
+                ]);
+
+                const suggestedName = download.suggestedFilename();
+                const safeFilename = this.sanitizeFilename(suggestedName || fileName || `photo_${i + 1}.jpg`);
+                const filepath = path.join(dir, safeFilename);
+                await download.saveAs(filepath);
+                downloadedFiles.push(safeFilename);
+                console.log(`        ダウンロード完了: ${safeFilename}`);
+              } catch {
+                console.log(`        ダウンロード失敗（タイムアウト）`);
+                await this.page.keyboard.press('Escape');
+              }
+            } else {
+              console.log(`        メニューが見つかりません`);
+              await this.page.keyboard.press('Escape');
+            }
+          } else {
+            console.log(`        メニューボタンが見つかりません`);
+          }
+        }
+
+        await sleep(300);
+
+      } catch (e) {
+        console.log(`        エラー: ${e}`);
+        await this.page.keyboard.press('Escape');
+        await sleep(200);
+      }
+    }
+
+    return downloadedFiles;
   }
 
   // 資料タブからフォルダ一覧とファイルをダウンロード
