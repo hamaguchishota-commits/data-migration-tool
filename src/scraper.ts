@@ -126,17 +126,17 @@ class KannaScraper {
     const currentUrl = this.page.url();
     console.log(`  現在のURL: ${currentUrl}`);
 
-    // Locator APIを使用してサイドバー内のメニューを探す
-    // サイドバー要素を特定
-    const sidebar = this.page.locator('aside, nav, [role="navigation"], [class*="sidebar"], [class*="Sidebar"]').first();
+    // サイドバー要素を特定（緑のサイドバー）
+    const sidebar = this.page.locator('aside, nav, [role="navigation"], [class*="sidebar"], [class*="Sidebar"], [class*="side-menu"], [class*="sidenav"]').first();
 
-    // サイドバー内の「案件一覧」リンクを探す
-    const menuLink = sidebar.getByRole('link', { name: '案件一覧' })
-      .or(sidebar.getByText('案件一覧', { exact: true }))
-      .or(sidebar.locator('a:has-text("案件一覧")'));
+    // サイドバー内の「案件一覧」リンク/ボタンを探す（exactで完全一致）
+    const menuLink = sidebar.getByRole('link', { name: '案件一覧', exact: true })
+      .or(sidebar.getByRole('button', { name: '案件一覧', exact: true }))
+      .or(sidebar.getByText('案件一覧', { exact: true }));
 
     try {
       // 要素が表示されるまで待機
+      console.log('  サイドバー内のメニューを探索中...');
       await menuLink.first().waitFor({ state: 'visible', timeout: 10000 });
       console.log('  サイドバー内の「案件一覧」を発見');
 
@@ -145,21 +145,27 @@ class KannaScraper {
       console.log('  クリック成功');
 
       // SPA: URLが /cms を含むまで待機
+      console.log('  URL変化を待機中...');
       await this.page.waitForURL(/\/cms/i, { timeout: 15000 });
       console.log('  案件一覧ページに遷移完了');
 
     } catch (e) {
-      // フォールバック: 位置ベースで探す
+      // フォールバック1: サイドバーをスコープせずに位置ベースで探す
       console.log('  Locatorで見つからず、位置ベースで探索...');
+      console.log(`  エラー詳細: ${e}`);
 
       const allLinks = await this.page.$$('a');
       let clicked = false;
 
+      console.log(`  全リンク数: ${allLinks.length}`);
+
       for (const link of allLinks) {
         const text = await link.textContent();
-        if (text && text.includes('案件一覧')) {
+        if (text && text.trim() === '案件一覧') {
           const box = await link.boundingBox();
           const isVisible = await link.isVisible();
+          console.log(`  「案件一覧」発見: visible=${isVisible}, x=${box?.x}, y=${box?.y}`);
+
           if (isVisible && box && box.x < 300) {
             console.log(`  位置ベースで発見 (x=${box.x})`);
             await link.click();
@@ -173,8 +179,28 @@ class KannaScraper {
       }
 
       if (!clicked) {
+        // フォールバック2: 部分一致で探す
+        console.log('  完全一致で見つからず、部分一致で探索...');
+        for (const link of allLinks) {
+          const text = await link.textContent();
+          if (text && text.includes('案件一覧')) {
+            const box = await link.boundingBox();
+            const isVisible = await link.isVisible();
+            console.log(`  「案件一覧」含む要素: "${text.trim()}", visible=${isVisible}, x=${box?.x}`);
+
+            if (isVisible && box && box.x < 300) {
+              await link.click();
+              clicked = true;
+              await this.page.waitForURL(/\/cms/i, { timeout: 15000 });
+              break;
+            }
+          }
+        }
+      }
+
+      if (!clicked) {
         await this.saveScreenshot('error_menu_not_found');
-        throw new Error('左サイドバーの「案件一覧」が見つかりません');
+        throw new Error('左サイドバーの「案件一覧」が見つかりません。スクリーンショットを確認してください。');
       }
     }
 
