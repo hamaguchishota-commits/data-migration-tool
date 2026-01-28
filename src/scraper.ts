@@ -687,46 +687,124 @@ class KannaScraper {
 
     const downloadedFiles: string[] = [];
 
-    const imageElements = await this.page.$$('img[src*="/photo"], img[src*="/image"], img[src*="storage"], .photo-item img, .gallery-item img');
-    const downloadLinks = await this.page.$$('a[href*="download"], a[download], button:has-text("ダウンロード")');
+    // KANNA専用: リスト表示から写真をダウンロード
+    // 写真リストの行を取得（テーブル行またはリストアイテム）
+    const photoRows = await this.page.$$('table tbody tr, [class*="list"] [class*="item"], [class*="row"]:has([class*="file"]), [class*="row"]:has([class*="photo"])');
 
-    if (imageElements.length > 0) {
-      console.log(`      ${imageElements.length} 枚の画像を検出`);
+    if (photoRows.length > 0) {
+      console.log(`      ${photoRows.length} 件のファイルを検出（リスト表示）`);
 
-      for (let i = 0; i < imageElements.length; i++) {
-        const img = imageElements[i];
-        const src = await img.getAttribute('src');
+      for (let i = 0; i < photoRows.length; i++) {
+        try {
+          // 再取得（SPAでDOM変わる可能性）
+          const currentRows = await this.page.$$('table tbody tr, [class*="list"] [class*="item"], [class*="row"]:has([class*="file"]), [class*="row"]:has([class*="photo"])');
+          if (i >= currentRows.length) break;
 
-        if (src) {
-          try {
-            const filename = `photo_${i + 1}${this.getExtension(src, '.jpg')}`;
-            const filepath = path.join(dir, filename);
+          const row = currentRows[i];
+          const fileName = await row.textContent();
+          console.log(`        [${i + 1}/${photoRows.length}] ${fileName?.trim().substring(0, 30)}...`);
 
-            const response = await this.page.request.get(src);
-            const buffer = await response.body();
-            fs.writeFileSync(filepath, buffer);
+          // 行をクリックして詳細/プレビューを開く
+          await row.click();
+          await sleep(1500);
 
-            downloadedFiles.push(filename);
-          } catch (e) {
-            console.log(`      画像ダウンロード失敗: ${src}`);
+          // ダウンロードボタンを探してクリック
+          const downloadBtn = await this.page.$('button:has-text("ダウンロード"), a:has-text("ダウンロード"), [class*="download"], [aria-label*="download"]');
+
+          if (downloadBtn) {
+            try {
+              const [download] = await Promise.all([
+                this.page.waitForEvent('download', { timeout: 10000 }),
+                downloadBtn.click(),
+              ]);
+
+              const suggestedName = download.suggestedFilename();
+              const safeFilename = this.sanitizeFilename(suggestedName || `photo_${i + 1}.jpg`);
+              const filepath = path.join(dir, safeFilename);
+              await download.saveAs(filepath);
+              downloadedFiles.push(safeFilename);
+              console.log(`        ダウンロード完了: ${safeFilename}`);
+            } catch (downloadError) {
+              console.log(`        ダウンロード失敗（タイムアウト）`);
+            }
+          } else {
+            // ダウンロードボタンがない場合、表示されてる画像を直接取得
+            const displayedImg = await this.page.$('img[src*="storage"], img[src*="photo"], img[src*="image"], [class*="preview"] img, [class*="viewer"] img');
+            if (displayedImg) {
+              const src = await displayedImg.getAttribute('src');
+              if (src) {
+                try {
+                  const response = await this.page.request.get(src);
+                  const buffer = await response.body();
+                  const filename = `photo_${i + 1}${this.getExtension(src, '.jpg')}`;
+                  const filepath = path.join(dir, filename);
+                  fs.writeFileSync(filepath, buffer);
+                  downloadedFiles.push(filename);
+                  console.log(`        画像取得完了: ${filename}`);
+                } catch {
+                  console.log(`        画像取得失敗`);
+                }
+              }
+            }
+          }
+
+          // 詳細画面を閉じる（×ボタン、戻るボタン、または背景クリック）
+          const closeBtn = await this.page.$('button:has-text("閉じる"), button[aria-label="Close"], [class*="close"], button:has-text("×"), button:has-text("✕")');
+          if (closeBtn) {
+            await closeBtn.click();
+          } else {
+            // ESCキーで閉じる
+            await this.page.keyboard.press('Escape');
+          }
+          await sleep(500);
+
+        } catch (e) {
+          console.log(`        エラー: ${e}`);
+        }
+      }
+    } else {
+      // フォールバック: 従来の方法（直接表示されてる画像）
+      const imageElements = await this.page.$$('img[src*="/photo"], img[src*="/image"], img[src*="storage"], .photo-item img, .gallery-item img');
+      const downloadLinks = await this.page.$$('a[href*="download"], a[download], button:has-text("ダウンロード")');
+
+      if (imageElements.length > 0) {
+        console.log(`      ${imageElements.length} 枚の画像を検出（従来方式）`);
+
+        for (let i = 0; i < imageElements.length; i++) {
+          const img = imageElements[i];
+          const src = await img.getAttribute('src');
+
+          if (src) {
+            try {
+              const filename = `photo_${i + 1}${this.getExtension(src, '.jpg')}`;
+              const filepath = path.join(dir, filename);
+
+              const response = await this.page.request.get(src);
+              const buffer = await response.body();
+              fs.writeFileSync(filepath, buffer);
+
+              downloadedFiles.push(filename);
+            } catch (e) {
+              console.log(`      画像ダウンロード失敗: ${src}`);
+            }
           }
         }
       }
-    }
 
-    for (const link of downloadLinks) {
-      try {
-        const [download] = await Promise.all([
-          this.page.waitForEvent('download', { timeout: 5000 }),
-          link.click(),
-        ]);
+      for (const link of downloadLinks) {
+        try {
+          const [download] = await Promise.all([
+            this.page.waitForEvent('download', { timeout: 5000 }),
+            link.click(),
+          ]);
 
-        const filename = download.suggestedFilename() || `file_${downloadedFiles.length + 1}`;
-        const filepath = path.join(dir, filename);
-        await download.saveAs(filepath);
-        downloadedFiles.push(filename);
-      } catch {
-        // スキップ
+          const filename = download.suggestedFilename() || `file_${downloadedFiles.length + 1}`;
+          const filepath = path.join(dir, filename);
+          await download.saveAs(filepath);
+          downloadedFiles.push(filename);
+        } catch {
+          // スキップ
+        }
       }
     }
 
