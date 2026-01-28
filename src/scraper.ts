@@ -1425,8 +1425,7 @@ async function main(): Promise<void> {
       // 工程表タブからExcelをダウンロード
       const schedule = await scraper.downloadSchedule(project.name);
 
-      // タスクタブからデータを取得
-      const tasks = await scraper.getTasks(project.name);
+      // タスクタブはスキップ
 
       // 写真タブをクリックして写真をダウンロード
       const photos = await scraper.downloadPhotos(project.name);
@@ -1453,7 +1452,6 @@ async function main(): Promise<void> {
         details,
         reports,
         schedule,
-        tasks,
         photos,
         documents,
         forms,
