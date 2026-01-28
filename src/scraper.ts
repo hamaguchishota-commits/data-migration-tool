@@ -365,74 +365,64 @@ class KannaScraper {
     if (!this.page) throw new Error('ブラウザが初期化されていません');
 
     const projects: Project[] = [];
-    const seenIds = new Set<string>(); // IDで重複管理（同名案件も別扱い）
-    let previousProjectCount = 0;
-    let sameCountStreak = 0;
-    const MAX_SCROLLS = 100; // 安全のため最大スクロール回数を制限
+    const seenUrls = new Set<string>(); // URLで重複管理（より確実）
+    const MAX_SCROLLS = 50;
     let scrollCount = 0;
 
     console.log('案件一覧を取得中（無限スクロール対応）...');
 
     // テーブルが表示されるまで待機
-    await sleep(1000);
+    await sleep(1500);
+
+    // ページに表示されている総件数を取得（例: "86件"）
+    let expectedTotal = 0;
+    try {
+      const countText = await this.page.textContent('text=/\\d+件/');
+      if (countText) {
+        const match = countText.match(/(\d+)件/);
+        if (match) {
+          expectedTotal = parseInt(match[1], 10);
+          console.log(`  ページに表示されている総件数: ${expectedTotal} 件`);
+        }
+      }
+    } catch {
+      console.log('  総件数の取得に失敗、スクロールで全件取得します');
+    }
+
+    // まず、スクロールして全件を読み込む
+    console.log('  全件読み込み中...');
+    let lastRowCount = 0;
+    let sameCountStreak = 0;
 
     while (scrollCount < MAX_SCROLLS) {
-      // 現在表示されている案件を取得
-      const rows = await this.page.$$('table tbody tr');
+      // 現在のテーブル行数を確認
+      const currentRows = await this.page.$$('table tbody tr');
+      const currentRowCount = currentRows.length;
 
-      for (const row of rows) {
-        // 案件名リンクを取得（最初のtd内のaタグ）
-        const nameEl = await row.$('td:first-child a, td a:first-child, a');
-        if (!nameEl) continue;
-
-        const name = await nameEl.textContent();
-        const href = await nameEl.getAttribute('href');
-
-        if (!name || !name.trim()) continue;
-
-        // IDを抽出（URLから）
-        let id = `row-${projects.length}`;
-        if (href) {
-          // /cms/123 または /project/123 形式からID抽出
-          const idMatch = href.match(/\/cms\/(\d+)/) || href.match(/\/(\d+)(?:\/|$)/) || href.match(/id=(\d+)/);
-          if (idMatch) {
-            id = idMatch[1];
-          }
-        }
-
-        // IDで重複チェック（同名案件も別々に取得）
-        if (!seenIds.has(id)) {
-          seenIds.add(id);
-          projects.push({
-            id,
-            name: name.trim(),
-            url: href ? (href.startsWith('http') ? href : `https://kanna4u.com${href}`) : '',
-          });
-        }
-      }
-
-      const afterCount = projects.length;
-      const newProjectsFound = afterCount - previousProjectCount;
-
-      if (newProjectsFound > 0) {
-        console.log(`  スクロール ${scrollCount + 1}: ${newProjectsFound} 件追加 (合計: ${afterCount} 件)`);
-        sameCountStreak = 0;
-      } else {
+      if (currentRowCount === lastRowCount) {
         sameCountStreak++;
         if (sameCountStreak >= 3) {
-          console.log(`  → 3回連続で新規案件なし、スクロール終了`);
+          console.log(`  → スクロール完了（${currentRowCount} 行読み込み済み）`);
           break;
         }
+      } else {
+        sameCountStreak = 0;
+        console.log(`  スクロール ${scrollCount + 1}: ${currentRowCount} 行表示中...`);
       }
 
-      previousProjectCount = afterCount;
+      lastRowCount = currentRowCount;
+
+      // 期待件数に達したら終了
+      if (expectedTotal > 0 && currentRowCount >= expectedTotal) {
+        console.log(`  → 期待件数 ${expectedTotal} 件に達しました`);
+        break;
+      }
 
       // ページ下部までスクロール
       await this.page.evaluate(() => {
         const table = document.querySelector('table');
         if (table) {
-          // テーブルの親要素（スクロールコンテナ）を探す
-          let scrollContainer = table.parentElement;
+          let scrollContainer: HTMLElement | null = table.parentElement;
           while (scrollContainer && scrollContainer.scrollHeight <= scrollContainer.clientHeight) {
             scrollContainer = scrollContainer.parentElement;
           }
@@ -446,8 +436,42 @@ class KannaScraper {
         }
       });
 
-      await sleep(1000); // スクロール後の読み込み待機
+      await sleep(800);
       scrollCount++;
+    }
+
+    // 全行からデータを抽出
+    console.log('  案件データを抽出中...');
+    const rows = await this.page.$$('table tbody tr');
+
+    for (let i = 0; i < rows.length; i++) {
+      const row = rows[i];
+      const nameEl = await row.$('td:first-child a, td a:first-child');
+      if (!nameEl) continue;
+
+      const name = await nameEl.textContent();
+      const href = await nameEl.getAttribute('href');
+
+      if (!name || !name.trim()) continue;
+      if (!href) continue; // URLがない行はスキップ
+
+      // URLで重複チェック（最も確実）
+      const fullUrl = href.startsWith('http') ? href : `https://kanna4u.com${href}`;
+      if (seenUrls.has(fullUrl)) continue;
+      seenUrls.add(fullUrl);
+
+      // IDを抽出
+      let id = `row-${i}`;
+      const idMatch = href.match(/\/cms\/(\d+)/) || href.match(/\/(\d+)(?:\/|$|\?)/) || href.match(/id=(\d+)/);
+      if (idMatch) {
+        id = idMatch[1];
+      }
+
+      projects.push({
+        id,
+        name: name.trim(),
+        url: fullUrl,
+      });
     }
 
     if (scrollCount >= MAX_SCROLLS) {
