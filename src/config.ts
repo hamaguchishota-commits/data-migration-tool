@@ -3,13 +3,9 @@ import dotenv from 'dotenv';
 dotenv.config();
 
 export const config = {
-  // Login settings
-  loginUrl: process.env.LOGIN_URL || '',
-  username: process.env.USERNAME || '',
-  password: process.env.PASSWORD || '',
-
-  // Target settings
-  targetUrl: process.env.TARGET_URL || '',
+  // KANNA credentials
+  kannaEmail: process.env.KANNA_EMAIL || '',
+  kannaPassword: process.env.KANNA_PASSWORD || '',
 
   // Browser settings
   headless: process.env.HEADLESS !== 'false',
