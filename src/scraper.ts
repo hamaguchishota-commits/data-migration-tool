@@ -210,125 +210,172 @@ class KannaScraper {
     // 遷移後のスクリーンショット
     await this.saveScreenshot('after_click_menu');
 
+    // 「すべての案件」を選択（案件テンプレートドロップダウン）
+    await this.selectAllProjects();
+
     console.log('案件一覧ページに遷移しました');
   }
 
-  // 案件一覧から全案件の情報を取得
+  // 案件テンプレートドロップダウンで「すべての案件」を選択
+  private async selectAllProjects(): Promise<void> {
+    if (!this.page) return;
+
+    console.log('  「すべての案件」を選択中...');
+
+    try {
+      // ドロップダウントリガーを探す（「すべての案件」または他のテンプレート名が表示されている）
+      const dropdownTrigger = this.page.locator('button:has-text("案件"), [class*="dropdown"] button, [class*="select"] button, [role="combobox"]').first();
+
+      // または、現在のテンプレート名をクリック
+      const templateSelector = this.page.locator('text=/すべての案件|自社案件|基本のテンプレート/').first();
+
+      let clicked = false;
+
+      // まずテンプレートセレクターを試す
+      try {
+        const isVisible = await templateSelector.isVisible({ timeout: 3000 });
+        if (isVisible) {
+          await templateSelector.click();
+          clicked = true;
+          console.log('  テンプレートセレクターをクリック');
+        }
+      } catch {
+        // 見つからない場合は次へ
+      }
+
+      // ドロップダウントリガーを試す
+      if (!clicked) {
+        try {
+          const isVisible = await dropdownTrigger.isVisible({ timeout: 3000 });
+          if (isVisible) {
+            await dropdownTrigger.click();
+            clicked = true;
+            console.log('  ドロップダウントリガーをクリック');
+          }
+        } catch {
+          console.log('  ドロップダウンが見つかりません、スキップ');
+          return;
+        }
+      }
+
+      if (!clicked) {
+        console.log('  テンプレート選択UIが見つかりません、スキップ');
+        return;
+      }
+
+      await sleep(500);
+
+      // ドロップダウンメニューから「すべての案件」を選択
+      const allProjectsOption = this.page.locator('[role="option"]:has-text("すべての案件"), [role="menuitem"]:has-text("すべての案件"), li:has-text("すべての案件"), div:has-text("すべての案件")').first();
+
+      try {
+        await allProjectsOption.waitFor({ state: 'visible', timeout: 3000 });
+        await allProjectsOption.click();
+        console.log('  「すべての案件」を選択しました');
+        await sleep(1500); // リスト再読み込みを待機
+      } catch {
+        // 既に「すべての案件」が選択されている場合、ESCで閉じる
+        await this.page.keyboard.press('Escape');
+        console.log('  既に「すべての案件」が選択済みか、オプションが見つかりません');
+      }
+
+    } catch (e) {
+      console.log(`  テンプレート選択エラー: ${e}`);
+    }
+  }
+
+  // 案件一覧から全案件の情報を取得（無限スクロール対応）
   async getProjects(): Promise<Project[]> {
     if (!this.page) throw new Error('ブラウザが初期化されていません');
 
     const projects: Project[] = [];
-    let hasNextPage = true;
-    let pageNum = 1;
-    const MAX_PAGES = 100; // 安全のため最大ページ数を制限
+    const seenIds = new Set<string>(); // IDで重複管理（同名案件も別扱い）
     let previousProjectCount = 0;
-    let sameCountStreak = 0; // 同じ件数が続いた回数
+    let sameCountStreak = 0;
+    const MAX_SCROLLS = 100; // 安全のため最大スクロール回数を制限
+    let scrollCount = 0;
 
-    while (hasNextPage && pageNum <= MAX_PAGES) {
-      console.log(`ページ ${pageNum} を取得中...`);
+    console.log('案件一覧を取得中（無限スクロール対応）...');
 
-      // テーブルが表示されるまで待機
-      await sleep(1000);
+    // テーブルが表示されるまで待機
+    await sleep(1000);
 
-      const beforeCount = projects.length;
+    while (scrollCount < MAX_SCROLLS) {
+      // 現在表示されている案件を取得
+      const rows = await this.page.$$('table tbody tr');
 
-      // テーブルの各行から案件を取得
-      const rows = await this.page.$$('table tbody tr, [class*="table"] [class*="row"], [class*="list"] [class*="item"]');
+      for (const row of rows) {
+        // 案件名リンクを取得（最初のtd内のaタグ）
+        const nameEl = await row.$('td:first-child a, td a:first-child, a');
+        if (!nameEl) continue;
 
-      if (rows.length > 0) {
-        for (let i = 0; i < rows.length; i++) {
-          const row = rows[i];
-          const nameEl = await row.$('a, [class*="name"], [class*="title"], td:first-child');
-          if (nameEl) {
-            const name = await nameEl.textContent();
-            const href = await nameEl.getAttribute('href');
+        const name = await nameEl.textContent();
+        const href = await nameEl.getAttribute('href');
 
-            if (name && name.trim()) {
-              let id = `${pageNum}-${i}`;
-              if (href) {
-                const idMatch = href.match(/\/(\d+)/) || href.match(/id=(\d+)/);
-                if (idMatch) {
-                  id = idMatch[1];
-                }
-              }
+        if (!name || !name.trim()) continue;
 
-              if (!projects.find(p => p.name === name.trim())) {
-                projects.push({
-                  id,
-                  name: name.trim(),
-                  url: href ? `https://kanna4u.com${href}` : '',
-                });
-              }
-            }
+        // IDを抽出（URLから）
+        let id = `row-${projects.length}`;
+        if (href) {
+          // /cms/123 または /project/123 形式からID抽出
+          const idMatch = href.match(/\/cms\/(\d+)/) || href.match(/\/(\d+)(?:\/|$)/) || href.match(/id=(\d+)/);
+          if (idMatch) {
+            id = idMatch[1];
           }
         }
-      } else {
-        // テーブルがない場合、案件リンクを直接取得
-        const links = await this.page.$$('a[href*="project"], a[href*="cms"]');
-        for (const link of links) {
-          const name = await link.textContent();
-          const href = await link.getAttribute('href');
-          if (name && name.trim() && !projects.find(p => p.name === name.trim())) {
-            projects.push({
-              id: `link-${projects.length}`,
-              name: name.trim(),
-              url: href ? `https://kanna4u.com${href}` : '',
-            });
-          }
+
+        // IDで重複チェック（同名案件も別々に取得）
+        if (!seenIds.has(id)) {
+          seenIds.add(id);
+          projects.push({
+            id,
+            name: name.trim(),
+            url: href ? (href.startsWith('http') ? href : `https://kanna4u.com${href}`) : '',
+          });
         }
       }
 
       const afterCount = projects.length;
-      const newProjectsFound = afterCount - beforeCount;
-      console.log(`  → ${newProjectsFound} 件の新規案件を発見 (合計: ${afterCount} 件)`);
+      const newProjectsFound = afterCount - previousProjectCount;
 
-      // 新規案件が見つからなかった場合のチェック
-      if (afterCount === previousProjectCount) {
+      if (newProjectsFound > 0) {
+        console.log(`  スクロール ${scrollCount + 1}: ${newProjectsFound} 件追加 (合計: ${afterCount} 件)`);
+        sameCountStreak = 0;
+      } else {
         sameCountStreak++;
-        console.log(`  → 新規案件なし (${sameCountStreak}回連続)`);
         if (sameCountStreak >= 3) {
-          console.log('  → 3回連続で新規案件なし、ページネーション終了');
-          hasNextPage = false;
+          console.log(`  → 3回連続で新規案件なし、スクロール終了`);
           break;
         }
-      } else {
-        sameCountStreak = 0;
       }
+
       previousProjectCount = afterCount;
 
-      // 次のページがあるかチェック
-      const nextButton = await this.page.$('button:has-text("次へ"), a:has-text("次へ"), button:has-text("次のページ"), a:has-text("次のページ"), [aria-label="Next page"], .pagination-next:not([disabled])');
-      if (nextButton) {
-        const isDisabled = await nextButton.getAttribute('disabled');
-        const ariaDisabled = await nextButton.getAttribute('aria-disabled');
-        const isVisible = await nextButton.isVisible();
-
-        console.log(`  → 次へボタン: visible=${isVisible}, disabled=${isDisabled}, aria-disabled=${ariaDisabled}`);
-
-        if (isVisible && !isDisabled && ariaDisabled !== 'true') {
-          const currentUrl = this.page.url();
-          await nextButton.click();
-          await sleep(1500); // SPA: 固定待機
-
-          // URLが変わったかチェック
-          const newUrl = this.page.url();
-          if (currentUrl === newUrl) {
-            console.log('  → URLが変わらず、ページネーション終了の可能性');
+      // ページ下部までスクロール
+      await this.page.evaluate(() => {
+        const table = document.querySelector('table');
+        if (table) {
+          // テーブルの親要素（スクロールコンテナ）を探す
+          let scrollContainer = table.parentElement;
+          while (scrollContainer && scrollContainer.scrollHeight <= scrollContainer.clientHeight) {
+            scrollContainer = scrollContainer.parentElement;
           }
-
-          pageNum++;
+          if (scrollContainer) {
+            scrollContainer.scrollTop = scrollContainer.scrollHeight;
+          } else {
+            window.scrollTo(0, document.body.scrollHeight);
+          }
         } else {
-          console.log('  → 次へボタンが無効、ページネーション終了');
-          hasNextPage = false;
+          window.scrollTo(0, document.body.scrollHeight);
         }
-      } else {
-        console.log('  → 次へボタンが見つからず、ページネーション終了');
-        hasNextPage = false;
-      }
+      });
+
+      await sleep(1000); // スクロール後の読み込み待機
+      scrollCount++;
     }
 
-    if (pageNum > MAX_PAGES) {
-      console.log(`警告: 最大ページ数 (${MAX_PAGES}) に達しました`);
+    if (scrollCount >= MAX_SCROLLS) {
+      console.log(`警告: 最大スクロール回数 (${MAX_SCROLLS}) に達しました`);
     }
 
     console.log(`${projects.length} 件の案件を取得しました`);
@@ -1759,7 +1806,9 @@ async function main(): Promise<void> {
 
     for (let i = 0; i < projects.length; i++) {
       const project = projects[i];
-      const projectDir = path.join(DOWNLOAD_DIR, scraper['sanitizeFilename'](project.name));
+      // フォルダ名にIDを含めて同名案件も区別（例: 案件名_12345）
+      const folderName = `${scraper['sanitizeFilename'](project.name)}_${project.id}`;
+      const projectDir = path.join(DOWNLOAD_DIR, folderName);
       const projectDataFile = path.join(projectDir, 'project_data.json');
 
       console.log(`\n========================================`);
