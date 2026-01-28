@@ -880,9 +880,14 @@ class KannaScraper {
     return downloadedFiles;
   }
 
-  // 報告タブからデータを取得
+  // 報告タブからデータを取得（KANNA専用: カード形式 + 写真ダウンロード）
   async getReports(projectName: string): Promise<any[]> {
     if (!this.page) throw new Error('ブラウザが初期化されていません');
+
+    const projectDir = path.join(DOWNLOAD_DIR, this.sanitizeFilename(projectName), 'reports');
+    if (!fs.existsSync(projectDir)) {
+      fs.mkdirSync(projectDir, { recursive: true });
+    }
 
     console.log('  報告タブを開く...');
     const reports: any[] = [];
@@ -904,54 +909,82 @@ class KannaScraper {
       return [];
     }
 
-    // 報告リストの行を取得
-    const reportRows = await this.page.$$('table tbody tr, [class*="list"] [class*="item"], [class*="report"] [class*="row"], [class*="row"]:has([class*="report"])');
+    // KANNA: 報告カードを取得（カード形式のリスト）
+    // カードには: 報告者名、タイトル（進捗報告など）、内容、写真アイコン+件数、時刻が表示
+    const reportCards = await this.page.$$('[class*="card"], [class*="list-item"], [class*="report-item"], [class*="item"]:has([class*="report"]), table tbody tr');
 
-    if (reportRows.length > 0) {
-      console.log(`    ${reportRows.length} 件の報告を検出`);
+    if (reportCards.length > 0) {
+      console.log(`    ${reportCards.length} 件の報告を検出`);
 
-      for (let i = 0; i < reportRows.length; i++) {
+      for (let i = 0; i < reportCards.length; i++) {
         try {
-          const currentRows = await this.page.$$('table tbody tr, [class*="list"] [class*="item"], [class*="report"] [class*="row"], [class*="row"]:has([class*="report"])');
-          if (i >= currentRows.length) break;
+          // 再取得（SPAでDOM変わる可能性）
+          const currentCards = await this.page.$$('[class*="card"], [class*="list-item"], [class*="report-item"], [class*="item"]:has([class*="report"]), table tbody tr');
+          if (i >= currentCards.length) break;
 
-          const row = currentRows[i];
-          const rowText = await row.textContent();
-          console.log(`      [${i + 1}/${reportRows.length}] ${rowText?.trim().substring(0, 40)}...`);
+          const card = currentCards[i];
 
-          // 行をクリックして詳細を開く
-          await row.click();
+          // カードから基本情報を抽出
+          const cardData = await card.evaluate((el) => {
+            const data: { [key: string]: string } = {};
+
+            // テキスト全体
+            const fullText = el.textContent?.trim() || '';
+
+            // 報告者名（通常は上部に表示）
+            const nameEl = el.querySelector('[class*="name"], [class*="author"], [class*="user"], [class*="reporter"]');
+            if (nameEl) data['報告者'] = nameEl.textContent?.trim() || '';
+
+            // タイトル（進捗報告など）
+            const titleEl = el.querySelector('[class*="title"], h3, h4, strong');
+            if (titleEl) data['タイトル'] = titleEl.textContent?.trim() || '';
+
+            // 内容/本文
+            const contentEl = el.querySelector('[class*="content"], [class*="body"], [class*="text"], [class*="description"], p');
+            if (contentEl) data['内容'] = contentEl.textContent?.trim() || '';
+
+            // 時刻
+            const timeEl = el.querySelector('[class*="time"], [class*="date"], time');
+            if (timeEl) data['時刻'] = timeEl.textContent?.trim() || '';
+
+            // 写真件数（アイコン付きの数字を探す）
+            const photoCountEl = el.querySelector('[class*="photo-count"], [class*="image-count"], [class*="count"]');
+            if (photoCountEl) {
+              const countText = photoCountEl.textContent?.trim() || '';
+              const countMatch = countText.match(/\d+/);
+              if (countMatch) data['写真件数'] = countMatch[0];
+            }
+
+            // フォールバック: 全テキストから情報を抽出
+            if (Object.keys(data).length === 0) {
+              data['内容'] = fullText.substring(0, 500);
+            }
+
+            return data;
+          });
+
+          console.log(`      [${i + 1}/${reportCards.length}] ${cardData['タイトル'] || cardData['内容']?.substring(0, 30) || '報告'}...`);
+
+          // カードをクリックして詳細を開く
+          await card.click();
           await sleep(1500);
 
-          // 詳細データを取得
-          const reportDetail = await this.page.evaluate(() => {
+          // 詳細画面からより詳しい情報を取得
+          const detailData = await this.page.evaluate(() => {
             const detail: { [key: string]: string } = {};
 
-            // モーダルまたは詳細ビューからデータを抽出
-            const modal = document.querySelector('[role="dialog"], [class*="modal"], [class*="detail"], [class*="drawer"]');
+            // モーダルまたは詳細パネルを探す
+            const modal = document.querySelector('[role="dialog"], [class*="modal"], [class*="detail"], [class*="drawer"], [class*="panel"]');
             const container = modal || document;
 
-            // テキストコンテンツを取得
-            const title = container.querySelector('h1, h2, h3, [class*="title"]');
-            if (title) detail['タイトル'] = title.textContent?.trim() || '';
-
-            const date = container.querySelector('[class*="date"], time');
-            if (date) detail['日時'] = date.textContent?.trim() || '';
-
-            const content = container.querySelector('[class*="content"], [class*="body"], [class*="description"], p');
-            if (content) detail['内容'] = content.textContent?.trim() || '';
-
-            const author = container.querySelector('[class*="author"], [class*="user"], [class*="name"]');
-            if (author) detail['作成者'] = author.textContent?.trim() || '';
-
             // ラベル・値ペアを探す
-            const rows = container.querySelectorAll('[class*="row"], [class*="field"], tr');
+            const rows = container.querySelectorAll('[class*="row"], [class*="field"], div > div');
             rows.forEach(row => {
-              const children = row.children;
-              if (children.length >= 2) {
+              const children = Array.from(row.children);
+              if (children.length === 2) {
                 const label = children[0].textContent?.trim().replace(/[:：]$/, '') || '';
                 const value = children[1].textContent?.trim() || '';
-                if (label && value && !detail[label]) {
+                if (label && value && label.length < 30 && !detail[label]) {
                   detail[label] = value;
                 }
               }
@@ -960,12 +993,99 @@ class KannaScraper {
             return detail;
           });
 
-          reports.push({ index: i + 1, ...reportDetail });
+          // カード情報と詳細情報をマージ
+          const reportData = { index: i + 1, ...cardData, ...detailData };
 
-          // 閉じる
-          const closeBtn = await this.page.$('button:has-text("閉じる"), button[aria-label="Close"], [class*="close"], button:has-text("×")');
-          if (closeBtn) {
-            await closeBtn.click();
+          // 写真をダウンロード
+          const downloadedPhotos: string[] = [];
+          const reportPhotoDir = path.join(projectDir, `report_${i + 1}`);
+
+          // 写真要素を探す（サムネイルまたはリスト）
+          const photoElements = await this.page.$$('[class*="photo"], [class*="image"], [class*="thumbnail"], img[src*="photo"], img[src*="image"], img[src*="storage"]');
+
+          if (photoElements.length > 0) {
+            if (!fs.existsSync(reportPhotoDir)) {
+              fs.mkdirSync(reportPhotoDir, { recursive: true });
+            }
+            console.log(`        ${photoElements.length} 枚の写真を検出`);
+
+            for (let j = 0; j < photoElements.length; j++) {
+              try {
+                // 再取得
+                const currentPhotos = await this.page.$$('[class*="photo"], [class*="image"], [class*="thumbnail"], img[src*="photo"], img[src*="image"], img[src*="storage"]');
+                if (j >= currentPhotos.length) break;
+
+                const photoEl = currentPhotos[j];
+
+                // 写真をクリックして詳細パネルを開く
+                await photoEl.click();
+                await sleep(1000);
+
+                // ダウンロードボタンを探す
+                const downloadBtn = await this.page.$('button:has-text("ダウンロード"), a:has-text("ダウンロード"), [class*="download"]');
+
+                if (downloadBtn) {
+                  try {
+                    const [download] = await Promise.all([
+                      this.page.waitForEvent('download', { timeout: 10000 }),
+                      downloadBtn.click(),
+                    ]);
+
+                    const suggestedName = download.suggestedFilename();
+                    const safeFilename = this.sanitizeFilename(suggestedName || `photo_${j + 1}.jpg`);
+                    const filepath = path.join(reportPhotoDir, safeFilename);
+                    await download.saveAs(filepath);
+                    downloadedPhotos.push(safeFilename);
+                    console.log(`          写真ダウンロード: ${safeFilename}`);
+                  } catch {
+                    console.log(`          写真ダウンロード失敗（タイムアウト）`);
+                  }
+                } else {
+                  // ダウンロードボタンがない場合、画像を直接取得
+                  const displayedImg = await this.page.$('img[src*="storage"], img[src*="photo"], [class*="preview"] img, [class*="viewer"] img');
+                  if (displayedImg) {
+                    const src = await displayedImg.getAttribute('src');
+                    if (src) {
+                      try {
+                        const response = await this.page.request.get(src);
+                        const buffer = await response.body();
+                        const filename = `photo_${j + 1}${this.getExtension(src, '.jpg')}`;
+                        const filepath = path.join(reportPhotoDir, filename);
+                        fs.writeFileSync(filepath, buffer);
+                        downloadedPhotos.push(filename);
+                        console.log(`          画像取得: ${filename}`);
+                      } catch {
+                        console.log(`          画像取得失敗`);
+                      }
+                    }
+                  }
+                }
+
+                // 写真詳細パネルを閉じる（ESCキーまたは閉じるボタン）
+                const closeBtn = await this.page.$('button:has-text("閉じる"), button[aria-label="Close"], [class*="close"]:not([class*="photo"]):not([class*="image"]), button:has-text("×")');
+                if (closeBtn) {
+                  await closeBtn.click();
+                } else {
+                  await this.page.keyboard.press('Escape');
+                }
+                await sleep(500);
+
+              } catch (photoError) {
+                console.log(`          写真処理エラー: ${photoError}`);
+                // ESCで閉じてみる
+                await this.page.keyboard.press('Escape');
+                await sleep(300);
+              }
+            }
+          }
+
+          reportData['downloadedPhotos'] = downloadedPhotos.join(', ');
+          reports.push(reportData);
+
+          // 報告詳細画面を閉じる
+          const closeDetailBtn = await this.page.$('button:has-text("閉じる"), button[aria-label="Close"], [class*="close"], button:has-text("×"), button:has-text("✕")');
+          if (closeDetailBtn) {
+            await closeDetailBtn.click();
           } else {
             await this.page.keyboard.press('Escape');
           }
@@ -973,17 +1093,14 @@ class KannaScraper {
 
         } catch (e) {
           console.log(`      エラー: ${e}`);
+          // ESCで閉じる試み
+          await this.page.keyboard.press('Escape');
+          await sleep(300);
         }
       }
     } else {
-      // リストがない場合、ページ全体からテキストを取得
-      const pageContent = await this.page.evaluate(() => {
-        const container = document.querySelector('[class*="tab-content"], [class*="panel"], main, [role="tabpanel"]');
-        return container?.textContent?.trim() || '';
-      });
-      if (pageContent) {
-        reports.push({ content: pageContent });
-      }
+      // 報告がない場合
+      console.log('    報告が見つかりません');
     }
 
     console.log(`  報告: ${reports.length} 件`);
