@@ -383,58 +383,149 @@ class KannaScraper {
       const isVisible = await overviewTab.isVisible();
       if (isVisible) {
         await overviewTab.click();
-        await sleep(1000);
+        await sleep(1500);
       }
     } catch {
       // 概要タブがない場合はスキップ
     }
 
+    // デバッグ用スクリーンショット
+    await this.saveScreenshot('project_detail_page');
+
     const details: ProjectDetail = {};
 
-    // ラベル：値のペアを自動検出
-    const patterns = [
-      { container: 'dl', label: 'dt', value: 'dd' },
-      { container: 'table', label: 'th', value: 'td' },
-      { container: '.detail-item, .info-item, .field-group', label: '.label, .field-label, .item-label', value: '.value, .field-value, .item-value' },
-    ];
+    // KANNA専用: ページ内の全てのラベル・値ペアを抽出
+    const extractedData = await this.page.evaluate(() => {
+      const result: { [key: string]: string } = {};
 
-    for (const pattern of patterns) {
-      const containers: ElementHandle[] = await this.page!.$$(pattern.container);
-      for (const container of containers) {
-        const labels: ElementHandle[] = await container.$$(pattern.label);
-        const values: ElementHandle[] = await container.$$(pattern.value);
+      // 既知のKANNAラベル名リスト
+      const knownLabels = [
+        '案件名', '開始日', '終了日', '案件テンプレート', '案件フロー', '備考', '親案件',
+        '物件名', '住所',
+        '駐車スペース', '工事可能期間', '土日の工事', '喫煙ルール', 'その他',
+        '区分', '氏名', '氏名(フリガナ)', '会社名または屋号名', '会社名または屋号名(フリガナ)',
+        '担当者名', '電話番号1', '電話番号2', 'FAX', 'メールアドレス'
+      ];
 
-        for (let i = 0; i < labels.length; i++) {
-          const labelText: string | null = await labels[i].textContent();
-          const valueText: string | null = values[i] ? await values[i].textContent() : '';
-
-          if (labelText && labelText.trim()) {
-            const key = labelText.trim().replace(/[:：]$/, '');
-            details[key] = valueText?.trim() || '';
+      // 方法1: テーブル構造（tr > td）を探す
+      const rows = document.querySelectorAll('tr');
+      rows.forEach(row => {
+        const cells = row.querySelectorAll('td, th');
+        if (cells.length >= 2) {
+          const label = cells[0].textContent?.trim() || '';
+          const value = cells[1].textContent?.trim() || '';
+          if (label && !result[label]) {
+            result[label] = value;
           }
         }
+      });
+
+      // 方法2: div行構造を探す（ラベルと値が横並び）
+      const allElements = document.querySelectorAll('div, span, p');
+      allElements.forEach(el => {
+        const text = el.textContent?.trim() || '';
+        // 既知のラベルに一致するか確認
+        for (const knownLabel of knownLabels) {
+          if (text === knownLabel || text === knownLabel + ':' || text === knownLabel + '：') {
+            // 次の兄弟要素から値を取得
+            let nextEl = el.nextElementSibling;
+            if (nextEl) {
+              const value = nextEl.textContent?.trim() || '';
+              if (value && value !== '-' && !result[knownLabel]) {
+                result[knownLabel] = value;
+              }
+            }
+            // 親要素の次の子要素も確認
+            const parent = el.parentElement;
+            if (parent) {
+              const children = Array.from(parent.children);
+              const idx = children.indexOf(el);
+              if (idx >= 0 && idx < children.length - 1) {
+                const valueEl = children[idx + 1];
+                const value = valueEl.textContent?.trim() || '';
+                if (value && value !== '-' && !result[knownLabel]) {
+                  result[knownLabel] = value;
+                }
+              }
+            }
+          }
+        }
+      });
+
+      // 方法3: 特定のclass名パターンで探す
+      const labelValuePairs = document.querySelectorAll('[class*="row"], [class*="item"], [class*="field"]');
+      labelValuePairs.forEach(pair => {
+        const children = pair.children;
+        if (children.length >= 2) {
+          const labelEl = children[0];
+          const valueEl = children[1];
+          const label = labelEl.textContent?.trim().replace(/[:：]$/, '') || '';
+          const value = valueEl.textContent?.trim() || '';
+          if (label && value && !result[label] && knownLabels.includes(label)) {
+            result[label] = value;
+          }
+        }
+      });
+
+      return result;
+    });
+
+    // 抽出したデータをdetailsにマージ
+    for (const [key, value] of Object.entries(extractedData)) {
+      if (key && value && value !== '-') {
+        details[key] = value;
       }
     }
 
-    // 汎用的なキー・バリュー検出
-    const labelElements = await this.page.$$('[class*="label"], [class*="Label"], label');
-    for (const labelEl of labelElements) {
-      const labelText = await labelEl.textContent();
-      if (labelText && labelText.trim()) {
-        const key = labelText.trim().replace(/[:：]$/, '');
-        if (!details[key]) {
-          const valueText = await labelEl.evaluate((el) => {
-            const next = el.nextElementSibling;
-            return next ? next.textContent : '';
-          });
-          if (valueText) {
-            details[key] = valueText.trim();
+    // フォールバック: 従来の方法も試す
+    if (Object.keys(details).length < 3) {
+      console.log('  → フォールバック: 従来の抽出方法を試行...');
+
+      // dl/dt/dd パターン
+      const dlElements: ElementHandle[] = await this.page!.$$('dl');
+      for (const dl of dlElements) {
+        const dts: ElementHandle[] = await dl.$$('dt');
+        const dds: ElementHandle[] = await dl.$$('dd');
+        for (let i = 0; i < dts.length; i++) {
+          const labelText = await dts[i].textContent();
+          const valueText = dds[i] ? await dds[i].textContent() : '';
+          if (labelText && labelText.trim()) {
+            const key = labelText.trim().replace(/[:：]$/, '');
+            if (!details[key]) {
+              details[key] = valueText?.trim() || '';
+            }
+          }
+        }
+      }
+
+      // table/th/td パターン
+      const tables: ElementHandle[] = await this.page!.$$('table');
+      for (const table of tables) {
+        const tableRows: ElementHandle[] = await table.$$('tr');
+        for (const row of tableRows) {
+          const th = await row.$('th');
+          const td = await row.$('td');
+          if (th && td) {
+            const labelText = await th.textContent();
+            const valueText = await td.textContent();
+            if (labelText && labelText.trim()) {
+              const key = labelText.trim().replace(/[:：]$/, '');
+              if (!details[key]) {
+                details[key] = valueText?.trim() || '';
+              }
+            }
           }
         }
       }
     }
 
     console.log(`  概要: ${Object.keys(details).length} 項目を取得`);
+
+    // 取得した項目をログに出力
+    for (const [key, value] of Object.entries(details)) {
+      console.log(`    ${key}: ${value.substring(0, 50)}${value.length > 50 ? '...' : ''}`);
+    }
+
     return details;
   }
 
