@@ -10,6 +10,7 @@ dist/
 # Data output
 data/*.json
 data/*.csv
+data/*.png
 
 # Playwright
 playwright-report/
