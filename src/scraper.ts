@@ -1354,87 +1354,63 @@ class KannaScraper {
       await this.page.waitForSelector('[role="dialog"], [class*="modal"], [class*="Modal"]', { timeout: 5000 });
       console.log('    日付範囲モーダルを検出');
 
-      // KANNAの日付入力フィールドを探す
-      // 「未設定」または日付テキストを含むクリック可能な要素
+      // 「未設定」テキストを直接クリック（Playwright getByText使用）
       console.log('    開始日を設定中...');
 
-      // 開始日フィールドをクリック（左側の日付エリア）
-      const startDateClicked = await this.page.evaluate(() => {
-        // モーダル内の要素を探す
-        const modal = document.querySelector('[role="dialog"], [class*="modal"], [class*="Modal"]');
-        if (!modal) return false;
+      // 開始日: 最初の「未設定」をクリック
+      try {
+        const startDateField = this.page.getByText('未設定', { exact: true }).first();
+        await startDateField.click({ timeout: 3000 });
+        console.log('    開始日フィールドをクリック');
+        await sleep(1000);
 
-        // 「未設定」または日付形式のテキストを含む要素を探す
-        const allElements = Array.from(modal.querySelectorAll('*'));
-        const datePattern = /未設定|\d{4}\/\d{1,2}\/\d{1,2}/;
-
-        for (let i = 0; i < allElements.length; i++) {
-          const el = allElements[i] as HTMLElement;
-          const text = el.textContent?.trim() || '';
-          const rect = el.getBoundingClientRect();
-
-          // 日付っぽいテキストで、適切なサイズの要素（入力フィールドっぽい）
-          if (datePattern.test(text) && rect.width > 50 && rect.width < 200 && rect.height > 20 && rect.height < 60) {
-            // 子要素が少ない末端に近い要素を優先
-            if (el.children.length <= 1) {
-              el.click();
-              return true;
-            }
-          }
-        }
-        return false;
-      });
-
-      if (startDateClicked) {
-        await sleep(800);
+        // カレンダーで日付を選択
         const startSelected = await this.selectDateInCalendar(minDate);
         if (!startSelected) {
           console.log('    開始日の選択に失敗');
         }
-      } else {
-        console.log('    開始日フィールドが見つかりません');
+      } catch (e) {
+        console.log(`    開始日フィールドのクリック失敗: ${e}`);
       }
 
-      // 少し待機してから終了日
       await sleep(500);
 
-      // 終了日フィールドをクリック（右側の日付エリア）
+      // 終了日: 2番目の「未設定」をクリック
       console.log('    終了日を設定中...');
 
-      const endDateClicked = await this.page.evaluate(() => {
-        const modal = document.querySelector('[role="dialog"], [class*="modal"], [class*="Modal"]');
-        if (!modal) return false;
+      try {
+        // 未設定テキストを全て取得
+        const allUnset = this.page.getByText('未設定', { exact: true });
+        const count = await allUnset.count();
+        console.log(`    「未設定」の数: ${count}`);
 
-        const allElements = Array.from(modal.querySelectorAll('*'));
-        const datePattern = /未設定|\d{4}\/\d{1,2}\/\d{1,2}/;
+        if (count >= 2) {
+          // 2番目の「未設定」をクリック（終了日）
+          await allUnset.nth(1).click({ timeout: 3000 });
+          console.log('    終了日フィールドをクリック');
+          await sleep(1000);
 
-        let count = 0;
-        for (let i = 0; i < allElements.length; i++) {
-          const el = allElements[i] as HTMLElement;
-          const text = el.textContent?.trim() || '';
-          const rect = el.getBoundingClientRect();
-
-          if (datePattern.test(text) && rect.width > 50 && rect.width < 200 && rect.height > 20 && rect.height < 60) {
-            if (el.children.length <= 1) {
-              count++;
-              if (count === 2) { // 2番目の日付フィールド（終了日）
-                el.click();
-                return true;
-              }
-            }
+          const endSelected = await this.selectDateInCalendar(maxDate);
+          if (!endSelected) {
+            console.log('    終了日の選択に失敗');
           }
-        }
-        return false;
-      });
+        } else if (count === 1) {
+          // 1つしかない場合は、日付が既に設定されている可能性
+          // 日付形式のテキストを探す
+          const dateField = this.page.getByText(/\d{4}\/\d{1,2}\/\d{1,2}/).nth(1);
+          await dateField.click({ timeout: 3000 });
+          console.log('    終了日フィールドをクリック（日付形式）');
+          await sleep(1000);
 
-      if (endDateClicked) {
-        await sleep(800);
-        const endSelected = await this.selectDateInCalendar(maxDate);
-        if (!endSelected) {
-          console.log('    終了日の選択に失敗');
+          const endSelected = await this.selectDateInCalendar(maxDate);
+          if (!endSelected) {
+            console.log('    終了日の選択に失敗');
+          }
+        } else {
+          console.log('    終了日フィールドが見つかりません');
         }
-      } else {
-        console.log('    終了日フィールドが見つかりません');
+      } catch (e) {
+        console.log(`    終了日フィールドのクリック失敗: ${e}`);
       }
 
       await sleep(500);
