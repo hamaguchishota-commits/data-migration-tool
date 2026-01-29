@@ -1354,77 +1354,125 @@ class KannaScraper {
       await this.page.waitForSelector('[role="dialog"], [class*="modal"], [class*="Modal"]', { timeout: 5000 });
       console.log('    日付範囲モーダルを検出');
 
-      // 「未設定」テキストを直接クリック（Playwright getByText使用）
+      // 日付フィールドをクリック（「未設定」または既存の日付形式）
+      // モーダル内の日付フィールドを取得
+      const modal = this.page.locator('[role="dialog"], [class*="modal"], [class*="Modal"]').first();
+
+      // 未設定テキストの数を確認
+      const allUnset = modal.getByText('未設定', { exact: true });
+      const unsetCount = await allUnset.count();
+      console.log(`    「未設定」の数: ${unsetCount}`);
+
+      // 既存の日付フィールド（YYYY/MM/DD形式）を取得
+      const existingDates = modal.getByText(/^\d{4}\/\d{1,2}\/\d{1,2}$/);
+      const existingCount = await existingDates.count();
+      console.log(`    既存日付の数: ${existingCount}`);
+
+      // 開始日を設定
       console.log('    開始日を設定中...');
+      let startDateClicked = false;
 
-      // 開始日: 最初の「未設定」をクリック
       try {
-        const startDateField = this.page.getByText('未設定', { exact: true }).first();
-        await startDateField.click({ timeout: 3000 });
-        console.log('    開始日フィールドをクリック');
-        await sleep(1000);
+        if (unsetCount >= 1) {
+          // 「未設定」がある場合は最初のものをクリック
+          await allUnset.first().click({ timeout: 3000 });
+          console.log('    開始日フィールドをクリック（未設定）');
+          startDateClicked = true;
+        } else if (existingCount >= 1) {
+          // 既存の日付がある場合は最初のものをクリック
+          await existingDates.first().click({ timeout: 3000 });
+          console.log('    開始日フィールドをクリック（既存日付）');
+          startDateClicked = true;
+        }
 
-        // カレンダーで日付を選択
-        const startSelected = await this.selectDateInCalendar(minDate);
-        if (!startSelected) {
-          console.log('    開始日の選択に失敗');
+        if (startDateClicked) {
+          await sleep(1000);
+          const startSelected = await this.selectDateInCalendar(minDate);
+          if (!startSelected) {
+            console.log('    開始日の選択に失敗');
+          }
+          // カレンダーを閉じるためにモーダル外をクリックするか、Escapeキーを押す
+          await this.page.keyboard.press('Escape');
+          await sleep(500);
+        } else {
+          console.log('    開始日フィールドが見つかりません');
         }
       } catch (e) {
         console.log(`    開始日フィールドのクリック失敗: ${e}`);
+        // エラー時もカレンダーが開いている可能性があるので閉じる
+        await this.page.keyboard.press('Escape');
+        await sleep(300);
       }
 
       await sleep(500);
 
-      // 終了日: 2番目の「未設定」をクリック
+      // 終了日を設定
       console.log('    終了日を設定中...');
 
+      // 再度カウントを取得（開始日設定後に変わっている可能性）
+      const remainingUnset = modal.getByText('未設定', { exact: true });
+      const remainingUnsetCount = await remainingUnset.count();
+      const remainingDates = modal.getByText(/^\d{4}\/\d{1,2}\/\d{1,2}$/);
+      const remainingDatesCount = await remainingDates.count();
+      console.log(`    残りの「未設定」: ${remainingUnsetCount}, 残りの日付: ${remainingDatesCount}`);
+
       try {
-        // 未設定テキストを全て取得
-        const allUnset = this.page.getByText('未設定', { exact: true });
-        const count = await allUnset.count();
-        console.log(`    「未設定」の数: ${count}`);
+        let endDateClicked = false;
 
-        if (count >= 2) {
-          // 2番目の「未設定」をクリック（終了日）
-          await allUnset.nth(1).click({ timeout: 3000 });
-          console.log('    終了日フィールドをクリック');
+        if (remainingUnsetCount >= 1) {
+          // 「未設定」がまだある場合（終了日が未設定）
+          await remainingUnset.first().click({ timeout: 3000 });
+          console.log('    終了日フィールドをクリック（未設定）');
+          endDateClicked = true;
+        } else if (remainingDatesCount >= 2) {
+          // 2つ以上の日付がある場合、2番目が終了日
+          await remainingDates.nth(1).click({ timeout: 3000 });
+          console.log('    終了日フィールドをクリック（既存日付）');
+          endDateClicked = true;
+        } else if (remainingDatesCount === 1) {
+          // 1つしかない場合でも終了日として扱う
+          await remainingDates.first().click({ timeout: 3000 });
+          console.log('    終了日フィールドをクリック（単一日付）');
+          endDateClicked = true;
+        }
+
+        if (endDateClicked) {
           await sleep(1000);
-
           const endSelected = await this.selectDateInCalendar(maxDate);
           if (!endSelected) {
             console.log('    終了日の選択に失敗');
           }
-        } else if (count === 1) {
-          // 1つしかない場合は、日付が既に設定されている可能性
-          // 日付形式のテキストを探す
-          const dateField = this.page.getByText(/\d{4}\/\d{1,2}\/\d{1,2}/).nth(1);
-          await dateField.click({ timeout: 3000 });
-          console.log('    終了日フィールドをクリック（日付形式）');
-          await sleep(1000);
-
-          const endSelected = await this.selectDateInCalendar(maxDate);
-          if (!endSelected) {
-            console.log('    終了日の選択に失敗');
-          }
+          // カレンダーを閉じる
+          await this.page.keyboard.press('Escape');
+          await sleep(500);
         } else {
           console.log('    終了日フィールドが見つかりません');
         }
       } catch (e) {
         console.log(`    終了日フィールドのクリック失敗: ${e}`);
+        // エラー時もカレンダーを閉じる
+        await this.page.keyboard.press('Escape');
+        await sleep(300);
       }
 
       await sleep(500);
 
-      // 「出力する」ボタンをクリック
-      const exportBtn = await this.page.$('button:has-text("出力する"), button:has-text("出力"), button[type="submit"]');
+      // カレンダーやポップアップが開いていたら閉じる
+      await this.page.keyboard.press('Escape');
+      await sleep(300);
 
-      if (exportBtn) {
+      // 「出力する」ボタンをクリック
+      // モーダル内のボタンを優先的に探す
+      const exportBtnLocator = modal.locator('button:has-text("出力する"), button:has-text("出力")');
+      const exportBtnCount = await exportBtnLocator.count();
+
+      if (exportBtnCount > 0) {
         console.log('    出力するボタンをクリック');
 
         try {
           const [download] = await Promise.all([
             this.page.waitForEvent('download', { timeout: 60000 }),
-            exportBtn.click(),
+            exportBtnLocator.first().click({ force: true }),
           ]);
 
           const suggestedName = download.suggestedFilename();
@@ -1435,6 +1483,23 @@ class KannaScraper {
           console.log(`    ダウンロード完了: ${safeFilename}`);
         } catch (e) {
           console.log(`    ダウンロード失敗: ${e}`);
+          // フォールバック: ページ全体から出力ボタンを探す
+          try {
+            const fallbackBtn = this.page.locator('button:has-text("出力する"), button:has-text("出力")').first();
+            const [download] = await Promise.all([
+              this.page.waitForEvent('download', { timeout: 30000 }),
+              fallbackBtn.click({ force: true }),
+            ]);
+
+            const suggestedName = download.suggestedFilename();
+            const safeFilename = this.sanitizeFilename(suggestedName || 'schedule.xlsx');
+            const filepath = path.join(projectDir, safeFilename);
+            await download.saveAs(filepath);
+            downloadedFiles.push(safeFilename);
+            console.log(`    ダウンロード完了（フォールバック）: ${safeFilename}`);
+          } catch (e2) {
+            console.log(`    フォールバックダウンロードも失敗: ${e2}`);
+          }
         }
       } else {
         console.log('    出力するボタンが見つかりません');
