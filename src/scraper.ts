@@ -664,9 +664,14 @@ class KannaScraper {
     }
   }
 
-  // 概要タブの全項目を自動検出して取得（会社ごとの設定に対応）
-  async getProjectDetails(): Promise<ProjectDetail> {
+  // 概要タブからCSVをダウンロード
+  async downloadOverviewCSV(projectName: string): Promise<string | null> {
     if (!this.page) throw new Error('ブラウザが初期化されていません');
+
+    const projectDir = path.join(DOWNLOAD_DIR, this.sanitizeFilename(projectName));
+    if (!fs.existsSync(projectDir)) {
+      fs.mkdirSync(projectDir, { recursive: true });
+    }
 
     // KANNA AIチャットボットを閉じる（存在する場合）
     await this.closeKannaAIChat();
@@ -675,98 +680,69 @@ class KannaScraper {
 
     // 概要タブをクリック（MUIボタン対応）
     await this.clickTab('概要');
+    await sleep(1000);
 
     // デバッグ用スクリーンショット
     await this.saveScreenshot('project_detail_page');
 
-    // KANNA専用: メインコンテンツ領域からラベル・値ペアを抽出
-    const extractedData = await this.page.evaluate(() => {
-      const result: { [key: string]: string } = {};
+    // ページをスクロールして「案件概要をCSVでダウンロード」ボタンを表示
+    await this.page.evaluate(() => {
+      window.scrollTo(0, document.body.scrollHeight);
+    });
+    await sleep(500);
 
-      // KANNA AIチャットボックスを除外（classに'chat'や'ai'を含む要素を無視）
-      const excludeSelectors = [
-        '[class*="chat"]', '[class*="Chat"]',
-        '[class*="ai-"]', '[class*="AI"]',
-        '[class*="assistant"]', '[class*="bot"]',
-        '[class*="modal"]', '[class*="popup"]', '[class*="overlay"]',
-        '[class*="sidebar"]', '[class*="Sidebar"]', 'aside', 'nav'
-      ];
+    // 「案件概要をCSVでダウンロード」ボタンを探してクリック
+    const csvDownloadBtn = await this.page.$('button:has-text("案件概要をCSVでダウンロード"), a:has-text("案件概要をCSVでダウンロード"), button:has-text("CSVでダウンロード"), a:has-text("CSVでダウンロード")');
 
-      // 除外する親要素を持つか確認する関数
-      const isInExcludedArea = (el: Element): boolean => {
-        let current: Element | null = el;
-        while (current) {
-          for (const selector of excludeSelectors) {
-            if (current.matches && current.matches(selector)) {
-              return true;
-            }
+    if (csvDownloadBtn) {
+      try {
+        console.log('    CSVダウンロードボタンを検出');
+        const [download] = await Promise.all([
+          this.page.waitForEvent('download', { timeout: 30000 }),
+          csvDownloadBtn.click(),
+        ]);
+
+        const suggestedName = download.suggestedFilename();
+        const safeFilename = this.sanitizeFilename(suggestedName || `${projectName}_概要.csv`);
+        const filepath = path.join(projectDir, safeFilename);
+        await download.saveAs(filepath);
+        console.log(`    概要CSVダウンロード完了: ${safeFilename}`);
+        return safeFilename;
+      } catch (e) {
+        console.log(`    概要CSVダウンロード失敗: ${e}`);
+      }
+    } else {
+      console.log('    CSVダウンロードボタンが見つかりません');
+
+      // フォールバック: page.evaluateでボタンを探す
+      const clicked = await this.page.evaluate(() => {
+        const buttons = Array.from(document.querySelectorAll('button, a'));
+        for (const btn of buttons) {
+          const text = btn.textContent || '';
+          if (text.includes('CSV') && text.includes('ダウンロード')) {
+            (btn as HTMLElement).click();
+            return true;
           }
-          current = current.parentElement;
         }
         return false;
-      };
-
-      // 概要ページの既知のフィールドラベル
-      const knownLabels = [
-        '案件名', '開始日', '終了日', '案件テンプレート', '案件フロー', '備考', '親案件',
-        '物件名', '住所',
-        '駐車スペース', '工事可能期間', '土日の工事', '現場ルール', 'その他',
-        '区分', '氏名', '氏名(フリガナ)', '会社名または屋号名', '会社名または屋号名(フリガナ)', '担当者名', '電話番号1', '電話番号2', 'メールアドレス'
-      ];
-
-      // 既知のラベルを含む要素を直接探す
-      knownLabels.forEach(label => {
-        // ラベルテキストを含む要素を探す
-        const xpath = `//*[contains(text(), '${label}')]`;
-        const labelElements = document.evaluate(xpath, document, null, XPathResult.ORDERED_NODE_SNAPSHOT_TYPE, null);
-
-        for (let i = 0; i < labelElements.snapshotLength; i++) {
-          const labelEl = labelElements.snapshotItem(i) as Element;
-          if (!labelEl || isInExcludedArea(labelEl)) continue;
-
-          // ラベルの次の兄弟要素または親の次の子要素から値を取得
-          const parent = labelEl.parentElement;
-          if (!parent) continue;
-
-          const siblings = Array.from(parent.children);
-          const labelIndex = siblings.indexOf(labelEl);
-
-          // 次の兄弟要素を値として取得
-          if (labelIndex >= 0 && labelIndex < siblings.length - 1) {
-            const valueEl = siblings[labelIndex + 1];
-            if (valueEl) {
-              const valueText = valueEl.textContent?.trim() || '';
-              if (valueText && valueText !== '-' && valueText !== label && !result[label]) {
-                result[label] = valueText;
-              } else if (valueText === '-' && !result[label]) {
-                result[label] = '';
-              }
-            }
-          }
-        }
       });
 
-      return result;
-    });
-
-    // 結果を整理
-    const details: ProjectDetail = {};
-    for (const [key, value] of Object.entries(extractedData)) {
-      // 空でないキーのみ追加（値は空でもOK）
-      if (key && key.trim()) {
-        details[key] = value;
+      if (clicked) {
+        try {
+          const download = await this.page.waitForEvent('download', { timeout: 30000 });
+          const suggestedName = download.suggestedFilename();
+          const safeFilename = this.sanitizeFilename(suggestedName || `${projectName}_概要.csv`);
+          const filepath = path.join(projectDir, safeFilename);
+          await download.saveAs(filepath);
+          console.log(`    概要CSVダウンロード完了（フォールバック）: ${safeFilename}`);
+          return safeFilename;
+        } catch (e) {
+          console.log(`    概要CSVダウンロード失敗（フォールバック）: ${e}`);
+        }
       }
     }
 
-    console.log(`  概要: ${Object.keys(details).length} 項目を取得`);
-
-    // 取得した項目をログに出力
-    for (const [key, value] of Object.entries(details)) {
-      const displayValue = value || '(空)';
-      console.log(`    ${key}: ${displayValue.substring(0, 50)}${displayValue.length > 50 ? '...' : ''}`);
-    }
-
-    return details;
+    return null;
   }
 
   // 写真タブからカテゴリ一覧と写真をダウンロード（KANNA専用）
@@ -1908,34 +1884,32 @@ async function main(): Promise<void> {
       // 案件詳細ページに直接遷移（URL使用、スクロール不要）
       await scraper.goToProject(project);
 
-      // 概要タブの項目を取得
-      const details = await scraper.getProjectDetails();
-      console.log('  概要データ:');
-      for (const [key, value] of Object.entries(details)) {
-        console.log(`    ${key}: ${value}`);
-      }
+      // タブ順序に従って処理: 概要→工程表→タスク→報告→写真→資料→帳票→写真台帳→担当
 
-      // 報告タブからデータを取得
-      const reports = await scraper.getReports(project.name);
+      // 1. 概要タブ - CSVダウンロード
+      const overviewCSV = await scraper.downloadOverviewCSV(project.name);
 
-      // 工程表タブからExcelをダウンロード
+      // 2. 工程表タブからExcelをダウンロード
       const schedule = await scraper.downloadSchedule(project.name);
 
-      // タスクタブはスキップ
+      // 3. タスクタブはスキップ（必要に応じて追加可能）
 
-      // 写真タブをクリックして写真をダウンロード
+      // 4. 報告タブからデータを取得
+      const reports = await scraper.getReports(project.name);
+
+      // 5. 写真タブをクリックして写真をダウンロード
       const photos = await scraper.downloadPhotos(project.name);
 
-      // 資料タブをクリックして資料をダウンロード
+      // 6. 資料タブをクリックして資料をダウンロード
       const documents = await scraper.downloadDocuments(project.name);
 
-      // 帳票タブからファイルをダウンロード
+      // 7. 帳票タブからファイルをダウンロード
       const forms = await scraper.downloadForms(project.name);
 
-      // 写真台帳タブからファイルをダウンロード
+      // 8. 写真台帳タブからファイルをダウンロード
       const photoLedger = await scraper.downloadPhotoLedger(project.name);
 
-      // 担当タブからデータを取得
+      // 9. 担当タブからデータを取得
       const staff = await scraper.getStaff(project.name);
 
       // 結果をJSONで保存
@@ -1945,9 +1919,9 @@ async function main(): Promise<void> {
 
       const result = {
         project: { id: project.id, name: project.name, url: project.url },
-        details,
-        reports,
+        overviewCSV,
         schedule,
+        reports,
         photos,
         documents,
         forms,
