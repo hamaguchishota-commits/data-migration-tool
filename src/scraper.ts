@@ -1281,7 +1281,7 @@ class KannaScraper {
     return reports;
   }
 
-  // 工程表タブからExcelをダウンロード
+  // 工程表タブからExcelをダウンロード（日付範囲モーダル対応）
   async downloadSchedule(projectName: string): Promise<string[]> {
     if (!this.page) throw new Error('ブラウザが初期化されていません');
 
@@ -1299,34 +1299,252 @@ class KannaScraper {
       return [];
     }
 
-    await sleep(500);
+    await sleep(1000);
+
+    // 工程表から全ての日付を取得（開始日・終了日）
+    const dates = await this.page.evaluate(() => {
+      const allDates: string[] = [];
+
+      // 日付パターン: YYYY/MM/DD または YYYY-MM-DD
+      const datePattern = /(\d{4})[\/\-](\d{1,2})[\/\-](\d{1,2})/g;
+
+      // ページ内のテキストから日付を抽出
+      const text = document.body.textContent || '';
+      let match;
+      while ((match = datePattern.exec(text)) !== null) {
+        allDates.push(match[0]);
+      }
+
+      return allDates;
+    });
+
+    console.log(`    工程表の日付を検出: ${dates.length} 件`);
+
+    // 日付をDateオブジェクトに変換してソート
+    const parsedDates = dates.map(d => {
+      const normalized = d.replace(/-/g, '/');
+      return new Date(normalized);
+    }).filter(d => !isNaN(d.getTime()));
+
+    if (parsedDates.length === 0) {
+      console.log('    日付が見つかりません');
+      return [];
+    }
+
+    // 最小（一番若い）と最大（一番古い）を取得
+    const minDate = new Date(Math.min(...parsedDates.map(d => d.getTime())));
+    const maxDate = new Date(Math.max(...parsedDates.map(d => d.getTime())));
+
+    console.log(`    出力期間: ${minDate.toISOString().split('T')[0]} ~ ${maxDate.toISOString().split('T')[0]}`);
 
     // Excel出力ボタンを探してクリック
     const excelBtn = await this.page.$('button:has-text("Excel出力"), button:has-text("Excel"), a:has-text("Excel出力"), a:has-text("Excel")');
 
-    if (excelBtn) {
-      try {
-        console.log('    Excel出力ボタンを検出');
-        const [download] = await Promise.all([
-          this.page.waitForEvent('download', { timeout: 30000 }),
-          excelBtn.click(),
-        ]);
+    if (!excelBtn) {
+      console.log('    Excel出力ボタンが見つかりません');
+      return [];
+    }
 
+    console.log('    Excel出力ボタンをクリック');
+    await excelBtn.click();
+    await sleep(1000);
+
+    // モーダルが表示されるのを待つ
+    try {
+      await this.page.waitForSelector('[role="dialog"], [class*="modal"], [class*="Modal"]', { timeout: 5000 });
+      console.log('    日付範囲モーダルを検出');
+
+      // 開始日の入力フィールドをクリック（左側）
+      const dateInputs = await this.page.$$('input[type="text"], input[placeholder*="日付"], [class*="date"] input');
+
+      if (dateInputs.length >= 2) {
+        // 開始日（左側のフィールド）
+        console.log('    開始日を設定中...');
+        await dateInputs[0].click();
+        await sleep(500);
+
+        // カレンダーが表示されるのを待つ
+        await this.selectDateInCalendar(minDate);
+
+        // 終了日（右側のフィールド）
+        console.log('    終了日を設定中...');
+        await dateInputs[1].click();
+        await sleep(500);
+
+        await this.selectDateInCalendar(maxDate);
+      } else {
+        // 入力フィールドが見つからない場合、page.evaluateで探す
+        console.log('    日付入力フィールドを検索中...');
+
+        // クリック可能な日付エリアを探す
+        const clicked = await this.page.evaluate(() => {
+          const inputs = Array.from(document.querySelectorAll('input'));
+          for (let i = 0; i < inputs.length; i++) {
+            const input = inputs[i];
+            const rect = input.getBoundingClientRect();
+            if (rect.width > 50 && rect.height > 20) {
+              input.click();
+              return true;
+            }
+          }
+          return false;
+        });
+
+        if (clicked) {
+          await sleep(500);
+          await this.selectDateInCalendar(minDate);
+        }
+      }
+
+      // 「出力する」ボタンをクリック
+      const exportBtn = await this.page.$('button:has-text("出力する"), button:has-text("出力"), button[type="submit"]');
+
+      if (exportBtn) {
+        console.log('    出力するボタンをクリック');
+
+        try {
+          const [download] = await Promise.all([
+            this.page.waitForEvent('download', { timeout: 60000 }),
+            exportBtn.click(),
+          ]);
+
+          const suggestedName = download.suggestedFilename();
+          const safeFilename = this.sanitizeFilename(suggestedName || 'schedule.xlsx');
+          const filepath = path.join(projectDir, safeFilename);
+          await download.saveAs(filepath);
+          downloadedFiles.push(safeFilename);
+          console.log(`    ダウンロード完了: ${safeFilename}`);
+        } catch (e) {
+          console.log(`    ダウンロード失敗: ${e}`);
+        }
+      } else {
+        console.log('    出力するボタンが見つかりません');
+      }
+
+    } catch (e) {
+      console.log(`    モーダルが表示されませんでした: ${e}`);
+
+      // モーダルなしで直接ダウンロードを試みる
+      try {
+        const download = await this.page.waitForEvent('download', { timeout: 10000 });
         const suggestedName = download.suggestedFilename();
         const safeFilename = this.sanitizeFilename(suggestedName || 'schedule.xlsx');
         const filepath = path.join(projectDir, safeFilename);
         await download.saveAs(filepath);
         downloadedFiles.push(safeFilename);
-        console.log(`    ダウンロード完了: ${safeFilename}`);
-      } catch (e) {
-        console.log(`    Excelダウンロード失敗: ${e}`);
+        console.log(`    ダウンロード完了（直接）: ${safeFilename}`);
+      } catch {
+        console.log('    Excelダウンロード失敗');
       }
-    } else {
-      console.log('    Excel出力ボタンが見つかりません');
     }
 
     console.log(`  工程表: ${downloadedFiles.length} ファイル`);
     return downloadedFiles;
+  }
+
+  // カレンダーから日付を選択するヘルパー関数
+  private async selectDateInCalendar(targetDate: Date): Promise<boolean> {
+    if (!this.page) return false;
+
+    const targetYear = targetDate.getFullYear();
+    const targetMonth = targetDate.getMonth() + 1; // 1-indexed
+    const targetDay = targetDate.getDate();
+
+    try {
+      // カレンダーが表示されるのを待つ
+      await sleep(500);
+
+      // 年月を移動（必要に応じて）
+      // カレンダーの現在の年月を取得
+      const MAX_NAVIGATION = 24; // 最大2年分
+      for (let i = 0; i < MAX_NAVIGATION; i++) {
+        const currentYearMonth = await this.page.evaluate(() => {
+          // カレンダーのヘッダーから年月を取得
+          const header = document.querySelector('[class*="calendar"] [class*="header"], [class*="picker"] [class*="header"], [class*="MuiPickersCalendarHeader"]');
+          if (header) {
+            return header.textContent || '';
+          }
+          // フォールバック: 年月を含むテキストを探す
+          const yearMonthPattern = /(\d{4})年(\d{1,2})月/;
+          const bodyText = document.body.textContent || '';
+          const match = bodyText.match(yearMonthPattern);
+          if (match) {
+            return `${match[1]}年${match[2]}月`;
+          }
+          return '';
+        });
+
+        // 現在の年月をパース
+        const yearMonthMatch = currentYearMonth.match(/(\d{4})年(\d{1,2})月/);
+        if (!yearMonthMatch) {
+          console.log(`      カレンダーの年月を取得できません: ${currentYearMonth}`);
+          break;
+        }
+
+        const currentYear = parseInt(yearMonthMatch[1]);
+        const currentMonth = parseInt(yearMonthMatch[2]);
+
+        if (currentYear === targetYear && currentMonth === targetMonth) {
+          // 目標の月に到達
+          break;
+        }
+
+        // 前後の月に移動
+        const diff = (targetYear - currentYear) * 12 + (targetMonth - currentMonth);
+        const navButton = diff < 0
+          ? await this.page.$('button[aria-label*="前"], button:has-text("<"), [class*="prev"], [class*="Prev"]')
+          : await this.page.$('button[aria-label*="次"], button:has-text(">"), [class*="next"], [class*="Next"]');
+
+        if (navButton) {
+          await navButton.click();
+          await sleep(300);
+        } else {
+          break;
+        }
+      }
+
+      // 日付をクリック
+      await sleep(300);
+      const dayClicked = await this.page.evaluate((day) => {
+        // 日付ボタンを探す（MUIカレンダー対応）
+        const dayButtons = Array.from(document.querySelectorAll('button[class*="MuiPickersDay"], [class*="day"], [role="gridcell"] button, [class*="calendar"] button'));
+
+        for (let i = 0; i < dayButtons.length; i++) {
+          const btn = dayButtons[i];
+          const text = btn.textContent?.trim();
+          if (text === String(day)) {
+            // 無効化されていないか確認
+            const isDisabled = btn.hasAttribute('disabled') || btn.classList.contains('disabled');
+            if (!isDisabled) {
+              (btn as HTMLElement).click();
+              return true;
+            }
+          }
+        }
+        return false;
+      }, targetDay);
+
+      if (dayClicked) {
+        console.log(`      日付選択: ${targetYear}/${targetMonth}/${targetDay}`);
+        await sleep(300);
+
+        // OKボタンがあればクリック
+        const okBtn = await this.page.$('button:has-text("OK"), button:has-text("確定")');
+        if (okBtn) {
+          await okBtn.click();
+          await sleep(300);
+        }
+
+        return true;
+      } else {
+        console.log(`      日付が見つかりません: ${targetDay}`);
+        return false;
+      }
+
+    } catch (e) {
+      console.log(`      カレンダー操作エラー: ${e}`);
+      return false;
+    }
   }
 
   // タスクタブからデータを取得
