@@ -1160,198 +1160,145 @@ class KannaScraper {
       return [];
     }
 
-    // KANNA: 報告カードを取得（カード形式のリスト）
-    // カードには: 報告者名、タイトル（進捗報告など）、内容、写真アイコン+件数、時刻が表示
-    const reportCards = await this.page.$$('[class*="card"], [class*="list-item"], [class*="report-item"], [class*="item"]:has([class*="report"]), table tbody tr');
+    await sleep(1000);
 
-    if (reportCards.length > 0) {
-      console.log(`    ${reportCards.length} 件の報告を検出`);
+    // KANNA: 報告カードを取得
+    // 報告カードは特定の構造を持つ（報告者名、タイトル、内容、写真アイコン、時刻）
+    // page.evaluateで実際の報告カードだけを検出
+    const reportCardInfo = await this.page.evaluate(() => {
+      const cards: { index: number; text: string }[] = [];
 
-      for (let i = 0; i < reportCards.length; i++) {
-        try {
-          // 再取得（SPAでDOM変わる可能性）
-          const currentCards = await this.page.$$('[class*="card"], [class*="list-item"], [class*="report-item"], [class*="item"]:has([class*="report"]), table tbody tr');
-          if (i >= currentCards.length) break;
+      // 「報告一覧」セクション内のカードを探す
+      // 報告カードは通常、クリック可能な要素で、報告者名と内容を含む
+      const allElements = document.querySelectorAll('div, article, section');
 
-          const card = currentCards[i];
+      for (let i = 0; i < allElements.length; i++) {
+        const el = allElements[i];
+        const text = el.textContent || '';
+        const rect = el.getBoundingClientRect();
 
-          // カードから基本情報を抽出
-          const cardData = await card.evaluate((el) => {
-            const data: { [key: string]: string } = {};
+        // 報告カードの特徴:
+        // - メインコンテンツ領域内（x > 200）
+        // - 適切なサイズ（width > 200, height > 50, height < 300）
+        // - 「終了報告」「進捗報告」「作業報告」などのキーワードを含む
+        // - 時刻っぽい文字列（XX:XX形式）を含む
+        const hasReportKeyword = /終了報告|進捗報告|作業報告|日報|週報|月報|報告/.test(text);
+        const hasTimeFormat = /\d{1,2}:\d{2}/.test(text);
+        const isInMainArea = rect.x > 200 && rect.width > 200;
+        const hasProperSize = rect.height > 50 && rect.height < 300 && rect.width < 800;
 
-            // テキスト全体
-            const fullText = el.textContent?.trim() || '';
+        if (hasReportKeyword && hasTimeFormat && isInMainArea && hasProperSize) {
+          // 親要素と重複しないようにチェック
+          const isDuplicate = cards.some(c => text.includes(c.text) || c.text.includes(text));
+          if (!isDuplicate) {
+            cards.push({ index: i, text: text.substring(0, 100) });
+          }
+        }
+      }
 
-            // 報告者名（通常は上部に表示）
-            const nameEl = el.querySelector('[class*="name"], [class*="author"], [class*="user"], [class*="reporter"]');
-            if (nameEl) data['報告者'] = nameEl.textContent?.trim() || '';
+      return cards;
+    });
 
-            // タイトル（進捗報告など）
-            const titleEl = el.querySelector('[class*="title"], h3, h4, strong');
-            if (titleEl) data['タイトル'] = titleEl.textContent?.trim() || '';
+    console.log(`    ${reportCardInfo.length} 件の報告を検出`);
 
-            // 内容/本文
-            const contentEl = el.querySelector('[class*="content"], [class*="body"], [class*="text"], [class*="description"], p');
-            if (contentEl) data['内容'] = contentEl.textContent?.trim() || '';
+    if (reportCardInfo.length === 0) {
+      // フォールバック: テーブル行を試す
+      const tableRows = await this.page.$$('table tbody tr');
+      if (tableRows.length > 0) {
+        console.log(`    テーブル形式: ${tableRows.length} 行を検出`);
+      }
+      return [];
+    }
 
-            // 時刻
-            const timeEl = el.querySelector('[class*="time"], [class*="date"], time');
-            if (timeEl) data['時刻'] = timeEl.textContent?.trim() || '';
+    // 各報告カードを処理
+    for (let i = 0; i < reportCardInfo.length; i++) {
+      try {
+        console.log(`      [${i + 1}/${reportCardInfo.length}] ${reportCardInfo[i].text.substring(0, 50)}...`);
 
-            // 写真件数（アイコン付きの数字を探す）
-            const photoCountEl = el.querySelector('[class*="photo-count"], [class*="image-count"], [class*="count"]');
-            if (photoCountEl) {
-              const countText = photoCountEl.textContent?.trim() || '';
-              const countMatch = countText.match(/\d+/);
-              if (countMatch) data['写真件数'] = countMatch[0];
-            }
-
-            // フォールバック: 全テキストから情報を抽出
-            if (Object.keys(data).length === 0) {
-              data['内容'] = fullText.substring(0, 500);
-            }
-
-            return data;
-          });
-
-          console.log(`      [${i + 1}/${reportCards.length}] ${cardData['タイトル'] || cardData['内容']?.substring(0, 30) || '報告'}...`);
-
-          // カードをクリックして詳細を開く
-          await card.click();
-          await sleep(1500);
-
-          // 詳細画面からより詳しい情報を取得
-          const detailData = await this.page.evaluate(() => {
-            const detail: { [key: string]: string } = {};
-
-            // モーダルまたは詳細パネルを探す
-            const modal = document.querySelector('[role="dialog"], [class*="modal"], [class*="detail"], [class*="drawer"], [class*="panel"]');
-            const container = modal || document;
-
-            // ラベル・値ペアを探す
-            const rows = container.querySelectorAll('[class*="row"], [class*="field"], div > div');
-            rows.forEach(row => {
-              const children = Array.from(row.children);
-              if (children.length === 2) {
-                const label = children[0].textContent?.trim().replace(/[:：]$/, '') || '';
-                const value = children[1].textContent?.trim() || '';
-                if (label && value && label.length < 30 && !detail[label]) {
-                  detail[label] = value;
-                }
+        // 報告カードをクリック（page.evaluateで特定してクリック）
+        const clicked = await this.page.evaluate((cardText) => {
+          const allElements = Array.from(document.querySelectorAll('div, article, section'));
+          for (let j = 0; j < allElements.length; j++) {
+            const el = allElements[j];
+            const text = el.textContent || '';
+            if (text.includes(cardText.substring(0, 30))) {
+              const rect = (el as HTMLElement).getBoundingClientRect();
+              if (rect.x > 200 && rect.height > 50 && rect.height < 300) {
+                (el as HTMLElement).click();
+                return true;
               }
-            });
+            }
+          }
+          return false;
+        }, reportCardInfo[i].text);
 
-            return detail;
-          });
+        if (!clicked) {
+          console.log(`        クリック失敗`);
+          continue;
+        }
 
-          // カード情報と詳細情報をマージ
-          const reportData: { [key: string]: any } = { index: i + 1, ...cardData, ...detailData };
+        await sleep(1500);
 
-          // 写真をダウンロード
-          const downloadedPhotos: string[] = [];
-          const reportPhotoDir = path.join(projectDir, `report_${i + 1}`);
+        // 報告詳細からデータを抽出
+        const reportData = await this.page.evaluate(() => {
+          const data: { [key: string]: string } = {};
 
-          // 写真要素を探す（サムネイルまたはリスト）
-          const photoElements = await this.page.$$('[class*="photo"], [class*="image"], [class*="thumbnail"], img[src*="photo"], img[src*="image"], img[src*="storage"]');
+          // モーダルまたは詳細パネルを探す
+          const modal = document.querySelector('[role="dialog"], [class*="modal"], [class*="detail"], [class*="drawer"]');
+          const container = modal || document.body;
 
-          if (photoElements.length > 0) {
+          // テキストコンテンツを取得
+          const text = container.textContent || '';
+          data['内容'] = text.substring(0, 1000);
+
+          return data;
+        });
+
+        // 写真があればダウンロード（ダウンロードボタンを直接探す）
+        const downloadBtn = await this.page.$('button:has-text("ダウンロード"), a:has-text("ダウンロード"), [aria-label*="ダウンロード"], [title*="ダウンロード"]');
+
+        if (downloadBtn) {
+          try {
+            console.log(`        ダウンロードボタンを検出`);
+            const reportPhotoDir = path.join(projectDir, `report_${i + 1}`);
             if (!fs.existsSync(reportPhotoDir)) {
               fs.mkdirSync(reportPhotoDir, { recursive: true });
             }
-            console.log(`        ${photoElements.length} 枚の写真を検出`);
 
-            for (let j = 0; j < photoElements.length; j++) {
-              try {
-                // 再取得
-                const currentPhotos = await this.page.$$('[class*="photo"], [class*="image"], [class*="thumbnail"], img[src*="photo"], img[src*="image"], img[src*="storage"]');
-                if (j >= currentPhotos.length) break;
+            const [download] = await Promise.all([
+              this.page.waitForEvent('download', { timeout: 30000 }),
+              downloadBtn.click(),
+            ]);
 
-                const photoEl = currentPhotos[j];
-
-                // 写真をクリックして詳細パネルを開く
-                await photoEl.click();
-                await sleep(1000);
-
-                // ダウンロードボタンを探す
-                const downloadBtn = await this.page.$('button:has-text("ダウンロード"), a:has-text("ダウンロード"), [class*="download"]');
-
-                if (downloadBtn) {
-                  try {
-                    const [download] = await Promise.all([
-                      this.page.waitForEvent('download', { timeout: 10000 }),
-                      downloadBtn.click(),
-                    ]);
-
-                    const suggestedName = download.suggestedFilename();
-                    const safeFilename = this.sanitizeFilename(suggestedName || `photo_${j + 1}.jpg`);
-                    const filepath = path.join(reportPhotoDir, safeFilename);
-                    await download.saveAs(filepath);
-                    downloadedPhotos.push(safeFilename);
-                    console.log(`          写真ダウンロード: ${safeFilename}`);
-                  } catch {
-                    console.log(`          写真ダウンロード失敗（タイムアウト）`);
-                  }
-                } else {
-                  // ダウンロードボタンがない場合、画像を直接取得
-                  const displayedImg = await this.page.$('img[src*="storage"], img[src*="photo"], [class*="preview"] img, [class*="viewer"] img');
-                  if (displayedImg) {
-                    const src = await displayedImg.getAttribute('src');
-                    if (src) {
-                      try {
-                        const response = await this.page.request.get(src);
-                        const buffer = await response.body();
-                        const filename = `photo_${j + 1}${this.getExtension(src, '.jpg')}`;
-                        const filepath = path.join(reportPhotoDir, filename);
-                        fs.writeFileSync(filepath, buffer);
-                        downloadedPhotos.push(filename);
-                        console.log(`          画像取得: ${filename}`);
-                      } catch {
-                        console.log(`          画像取得失敗`);
-                      }
-                    }
-                  }
-                }
-
-                // 写真詳細パネルを閉じる（ESCキーまたは閉じるボタン）
-                const closeBtn = await this.page.$('button:has-text("閉じる"), button[aria-label="Close"], [class*="close"]:not([class*="photo"]):not([class*="image"]), button:has-text("×")');
-                if (closeBtn) {
-                  await closeBtn.click();
-                } else {
-                  await this.page.keyboard.press('Escape');
-                }
-                await sleep(500);
-
-              } catch (photoError) {
-                console.log(`          写真処理エラー: ${photoError}`);
-                // ESCで閉じてみる
-                await this.page.keyboard.press('Escape');
-                await sleep(300);
-              }
-            }
+            const suggestedName = download.suggestedFilename();
+            const safeFilename = this.sanitizeFilename(suggestedName || `report_${i + 1}_attachment`);
+            const filepath = path.join(reportPhotoDir, safeFilename);
+            await download.saveAs(filepath);
+            reportData['ダウンロードファイル'] = safeFilename;
+            console.log(`        ダウンロード完了: ${safeFilename}`);
+          } catch (e) {
+            console.log(`        ダウンロード失敗`);
           }
-
-          reportData['downloadedPhotos'] = downloadedPhotos.join(', ');
-          reports.push(reportData);
-
-          // 報告詳細画面を閉じる
-          const closeDetailBtn = await this.page.$('button:has-text("閉じる"), button[aria-label="Close"], [class*="close"], button:has-text("×"), button:has-text("✕")');
-          if (closeDetailBtn) {
-            await closeDetailBtn.click();
-          } else {
-            await this.page.keyboard.press('Escape');
-          }
-          await sleep(500);
-
-        } catch (e) {
-          console.log(`      エラー: ${e}`);
-          // ESCで閉じる試み
-          await this.page.keyboard.press('Escape');
-          await sleep(300);
         }
+
+        reports.push({ index: i + 1, ...reportData });
+
+        // 詳細画面を閉じる
+        await this.page.keyboard.press('Escape');
+        await sleep(500);
+
+        // 報告タブに戻る（必要に応じて）
+        const currentUrl = this.page.url();
+        if (!currentUrl.includes('work-reports')) {
+          await this.clickTab('報告');
+          await sleep(500);
+        }
+
+      } catch (e) {
+        console.log(`      エラー: ${e}`);
+        await this.page.keyboard.press('Escape');
+        await sleep(300);
       }
-    } else {
-      // 報告がない場合
-      console.log('    報告が見つかりません');
     }
 
     console.log(`  報告: ${reports.length} 件`);
