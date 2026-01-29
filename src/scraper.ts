@@ -1354,47 +1354,90 @@ class KannaScraper {
       await this.page.waitForSelector('[role="dialog"], [class*="modal"], [class*="Modal"]', { timeout: 5000 });
       console.log('    日付範囲モーダルを検出');
 
-      // 開始日の入力フィールドをクリック（左側）
-      const dateInputs = await this.page.$$('input[type="text"], input[placeholder*="日付"], [class*="date"] input');
+      // KANNAの日付入力フィールドを探す
+      // 「未設定」または日付テキストを含むクリック可能な要素
+      console.log('    開始日を設定中...');
 
-      if (dateInputs.length >= 2) {
-        // 開始日（左側のフィールド）
-        console.log('    開始日を設定中...');
-        await dateInputs[0].click();
-        await sleep(500);
+      // 開始日フィールドをクリック（左側の日付エリア）
+      const startDateClicked = await this.page.evaluate(() => {
+        // モーダル内の要素を探す
+        const modal = document.querySelector('[role="dialog"], [class*="modal"], [class*="Modal"]');
+        if (!modal) return false;
 
-        // カレンダーが表示されるのを待つ
-        await this.selectDateInCalendar(minDate);
+        // 「未設定」または日付形式のテキストを含む要素を探す
+        const allElements = Array.from(modal.querySelectorAll('*'));
+        const datePattern = /未設定|\d{4}\/\d{1,2}\/\d{1,2}/;
 
-        // 終了日（右側のフィールド）
-        console.log('    終了日を設定中...');
-        await dateInputs[1].click();
-        await sleep(500);
+        for (let i = 0; i < allElements.length; i++) {
+          const el = allElements[i] as HTMLElement;
+          const text = el.textContent?.trim() || '';
+          const rect = el.getBoundingClientRect();
 
-        await this.selectDateInCalendar(maxDate);
-      } else {
-        // 入力フィールドが見つからない場合、page.evaluateで探す
-        console.log('    日付入力フィールドを検索中...');
-
-        // クリック可能な日付エリアを探す
-        const clicked = await this.page.evaluate(() => {
-          const inputs = Array.from(document.querySelectorAll('input'));
-          for (let i = 0; i < inputs.length; i++) {
-            const input = inputs[i];
-            const rect = input.getBoundingClientRect();
-            if (rect.width > 50 && rect.height > 20) {
-              input.click();
+          // 日付っぽいテキストで、適切なサイズの要素（入力フィールドっぽい）
+          if (datePattern.test(text) && rect.width > 50 && rect.width < 200 && rect.height > 20 && rect.height < 60) {
+            // 子要素が少ない末端に近い要素を優先
+            if (el.children.length <= 1) {
+              el.click();
               return true;
             }
           }
-          return false;
-        });
-
-        if (clicked) {
-          await sleep(500);
-          await this.selectDateInCalendar(minDate);
         }
+        return false;
+      });
+
+      if (startDateClicked) {
+        await sleep(800);
+        const startSelected = await this.selectDateInCalendar(minDate);
+        if (!startSelected) {
+          console.log('    開始日の選択に失敗');
+        }
+      } else {
+        console.log('    開始日フィールドが見つかりません');
       }
+
+      // 少し待機してから終了日
+      await sleep(500);
+
+      // 終了日フィールドをクリック（右側の日付エリア）
+      console.log('    終了日を設定中...');
+
+      const endDateClicked = await this.page.evaluate(() => {
+        const modal = document.querySelector('[role="dialog"], [class*="modal"], [class*="Modal"]');
+        if (!modal) return false;
+
+        const allElements = Array.from(modal.querySelectorAll('*'));
+        const datePattern = /未設定|\d{4}\/\d{1,2}\/\d{1,2}/;
+
+        let count = 0;
+        for (let i = 0; i < allElements.length; i++) {
+          const el = allElements[i] as HTMLElement;
+          const text = el.textContent?.trim() || '';
+          const rect = el.getBoundingClientRect();
+
+          if (datePattern.test(text) && rect.width > 50 && rect.width < 200 && rect.height > 20 && rect.height < 60) {
+            if (el.children.length <= 1) {
+              count++;
+              if (count === 2) { // 2番目の日付フィールド（終了日）
+                el.click();
+                return true;
+              }
+            }
+          }
+        }
+        return false;
+      });
+
+      if (endDateClicked) {
+        await sleep(800);
+        const endSelected = await this.selectDateInCalendar(maxDate);
+        if (!endSelected) {
+          console.log('    終了日の選択に失敗');
+        }
+      } else {
+        console.log('    終了日フィールドが見つかりません');
+      }
+
+      await sleep(500);
 
       // 「出力する」ボタンをクリック
       const exportBtn = await this.page.$('button:has-text("出力する"), button:has-text("出力"), button[type="submit"]');
