@@ -1411,30 +1411,24 @@ class KannaScraper {
         // まず「写真」セクションを探す
         console.log(`        写真セクションを検索中...`);
 
-        // 方法1: 「写真」ラベルの親要素内のクリック可能な画像要素を探す
-        const photoSection = await this.page.$('text=写真 >> xpath=../.. >> div[style*="background-image"], text=写真 >> xpath=../.. >> img, text=写真 >> xpath=.. >> div[style*="background-image"]');
-
-        // 方法2: background-imageを持つdiv要素を探す（写真サムネイル用）
-        const bgImageDivs = await this.page.$$('div[style*="background-image"]');
-        console.log(`        [DEBUG] background-image付きdiv: ${bgImageDivs.length}件`);
-
-        // 方法3: 「写真」テキストの近くにある画像的な要素
-        const photoRowImages = await this.page.$$('div:has(> div:text-is("写真")) img, div:has(> div:text-is("写真")) div[style*="background"]');
-        console.log(`        [DEBUG] 写真行内の要素: ${photoRowImages.length}件`);
-
         // 全てのクリック可能な写真候補を収集
         const clickablePhotos: ElementHandle<Element>[] = [];
 
-        // background-image divをフィルタ
-        for (const div of bgImageDivs) {
+        // 全divを取得してbackground-imageをチェック
+        const allDivs = await this.page.$$('div');
+        console.log(`        [DEBUG] 全div数: ${allDivs.length}`);
+
+        for (const div of allDivs) {
           try {
-            const box = await div.boundingBox();
-            const style = await div.getAttribute('style');
-            if (box && box.width >= 50 && box.height >= 50 && style) {
-              // storage.googleapis.comやkanna関連のURLを含むか確認
-              if (style.includes('storage') || style.includes('kanna') || style.includes('blob')) {
-                console.log(`        [DEBUG] 写真候補発見: ${box.width}x${box.height}`);
-                clickablePhotos.push(div);
+            const bgImage = await div.evaluate((el) => window.getComputedStyle(el).backgroundImage);
+            if (bgImage && bgImage !== 'none' && bgImage.includes('url(')) {
+              const box = await div.boundingBox();
+              if (box && box.width >= 50 && box.height >= 50) {
+                // storage.googleapis.comやkanna関連のURLを含むか確認
+                if (bgImage.includes('storage') || bgImage.includes('kanna') || bgImage.includes('blob') || bgImage.includes('firebasestorage')) {
+                  console.log(`        [DEBUG] 写真候補発見: ${box.width}x${box.height} bg=${bgImage.substring(0, 80)}...`);
+                  clickablePhotos.push(div);
+                }
               }
             }
           } catch {
