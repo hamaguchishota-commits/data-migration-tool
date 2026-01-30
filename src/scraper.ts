@@ -869,9 +869,13 @@ class KannaScraper {
                 await download.saveAs(filepath);
                 folders.push({ name: safeCategoryName, files: [safeFilename] });
                 console.log(`      フォルダダウンロード完了: ${safeFilename}`);
+                // メニューを閉じる
+                await this.page.keyboard.press('Escape');
+                await sleep(500);
               } catch (downloadError) {
                 console.log(`      フォルダダウンロード失敗（タイムアウト）`);
                 await this.page.keyboard.press('Escape');
+                await sleep(500);
               }
               break;
             }
@@ -900,9 +904,13 @@ class KannaScraper {
                   await download.saveAs(filepath);
                   folders.push({ name: safeCategoryName, files: [safeFilename] });
                   console.log(`      フォルダダウンロード完了: ${safeFilename}`);
+                  // メニューを閉じる
+                  await this.page.keyboard.press('Escape');
+                  await sleep(500);
                 } catch (downloadError) {
                   console.log(`      フォルダダウンロード失敗（タイムアウト）`);
                   await this.page.keyboard.press('Escape');
+                  await sleep(500);
                 }
               }
             }
@@ -911,6 +919,7 @@ class KannaScraper {
           if (!downloadClicked) {
             console.log(`      ダウンロードメニューが見つかりません - スキップ`);
             await this.page.keyboard.press('Escape');
+            await sleep(500);
           }
         } else {
           console.log(`      メニューボタンが見つかりません`);
