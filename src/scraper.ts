@@ -1409,11 +1409,11 @@ class KannaScraper {
         // 2. 写真があればクリックしてダウンロード
         // 写真セクション内の画像を探す（より広いセレクター）
         // KANNAの報告詳細では画像は様々な形式で表示される
-        const photoImages = await this.page.$$('img');
+        const allImages = await this.page.$$('img');
 
         // 適切なサイズの画像だけをフィルタリング（サムネイルや小さなアイコンを除外）
-        const clickablePhotos: typeof photoImages = [];
-        for (const img of photoImages) {
+        const clickablePhotos: (typeof allImages)[number][] = [];
+        for (const img of allImages) {
           try {
             const box = await img.boundingBox();
             const src = await img.getAttribute('src');
@@ -1421,12 +1421,12 @@ class KannaScraper {
             if (box && box.width >= 50 && box.height >= 50 && src && !src.startsWith('data:') && !src.includes('icon')) {
               clickablePhotos.push(img);
             }
-          } catch (e) {
+          } catch {
             // 無視
           }
         }
 
-        console.log(`        写真: ${clickablePhotos.length} 件検出（全img: ${photoImages.length}件）`);
+        console.log(`        写真: ${clickablePhotos.length} 件検出（全img: ${allImages.length}件）`);
 
         for (let j = 0; j < clickablePhotos.length; j++) {
           try {
