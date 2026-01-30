@@ -1413,16 +1413,31 @@ class KannaScraper {
 
         // 適切なサイズの画像だけをフィルタリング（サムネイルや小さなアイコンを除外）
         const clickablePhotos: ElementHandle<HTMLImageElement>[] = [];
-        for (const img of allImages) {
+        console.log(`        [DEBUG] 全img要素を検査中...`);
+        for (let idx = 0; idx < allImages.length; idx++) {
+          const img = allImages[idx];
           try {
             const box = await img.boundingBox();
             const src = await img.getAttribute('src');
-            // サイズが50x50以上で、data:URLやアイコンでない画像
-            if (box && box.width >= 50 && box.height >= 50 && src && !src.startsWith('data:') && !src.includes('icon')) {
+            const srcShort = src ? (src.length > 80 ? src.substring(0, 80) + '...' : src) : 'null';
+
+            // デバッグ: 各imgの情報を出力
+            const reasons: string[] = [];
+            if (!box) reasons.push('box=null');
+            else if (box.width < 50) reasons.push(`width=${box.width}<50`);
+            else if (box.height < 50) reasons.push(`height=${box.height}<50`);
+            if (!src) reasons.push('src=null');
+            else if (src.startsWith('data:')) reasons.push('data:URL');
+            else if (src.includes('icon')) reasons.push('contains "icon"');
+
+            if (reasons.length > 0) {
+              console.log(`        [DEBUG] img[${idx}]: 除外 (${reasons.join(', ')}) src=${srcShort}`);
+            } else {
+              console.log(`        [DEBUG] img[${idx}]: OK (${box?.width}x${box?.height}) src=${srcShort}`);
               clickablePhotos.push(img);
             }
-          } catch {
-            // 無視
+          } catch (e) {
+            console.log(`        [DEBUG] img[${idx}]: エラー ${e}`);
           }
         }
 
