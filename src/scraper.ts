@@ -1487,23 +1487,48 @@ class KannaScraper {
               }
             }
 
-            // 全画面表示を閉じる（閉じるボタンまたはEscape）
-            const closeBtn = await this.page.$('button:has-text("閉じる"), [aria-label="close"], [class*="close"]');
-            if (closeBtn) {
-              await closeBtn.click();
-            } else {
-              await this.page.keyboard.press('Escape');
+            // 全画面表示を閉じる（モーダルが確実に閉じるまで繰り返す）
+            for (let closeAttempt = 0; closeAttempt < 5; closeAttempt++) {
+              // MuiModalが存在するかチェック
+              const modalExists = await this.page.$('.MuiModal-root, [role="presentation"]').catch(() => null);
+              if (!modalExists) {
+                break; // モーダルが閉じた
+              }
+
+              // 閉じるボタンを探す
+              const closeBtn = await this.page.$('button:has-text("閉じる"), [aria-label="close"], [class*="close"], button[class*="Close"]');
+              if (closeBtn) {
+                await closeBtn.click().catch(() => {});
+              } else {
+                // Escapeキーを押す
+                await this.page.keyboard.press('Escape');
+              }
+              await sleep(500);
             }
-            await sleep(500);
+            await sleep(300);
 
           } catch (photoError) {
             console.log(`        写真処理エラー: ${photoError}`);
-            await this.page.keyboard.press('Escape');
-            await sleep(300);
+            // モーダルを閉じる試み（複数回）
+            for (let i = 0; i < 3; i++) {
+              await this.page.keyboard.press('Escape');
+              await sleep(300);
+              const modalStillExists = await this.page.$('.MuiModal-root').catch(() => null);
+              if (!modalStillExists) break;
+            }
           }
         }
 
         reports.push({ index: i + 1 });
+
+        // 報告一覧に戻る前にモーダルが残っていないか確認
+        for (let closeAttempt = 0; closeAttempt < 3; closeAttempt++) {
+          const remainingModal = await this.page.$('.MuiModal-root, [role="presentation"]').catch(() => null);
+          if (!remainingModal) break;
+          console.log(`        モーダルが残っているため閉じています...`);
+          await this.page.keyboard.press('Escape');
+          await sleep(500);
+        }
 
         // 報告一覧に戻る
         const backLink = this.page.getByText('報告一覧に戻る', { exact: false });
