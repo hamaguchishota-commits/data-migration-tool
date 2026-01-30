@@ -790,9 +790,15 @@ class KannaScraper {
 
     for (let i = 0; i < categoryRows.length; i++) {
       try {
+        // ページが安定するのを待つ
+        await sleep(500);
+
         // 再取得（SPAでDOM変わる可能性）
         const currentRows = await this.page.$$('table tbody tr');
-        if (i >= currentRows.length) break;
+        if (i >= currentRows.length) {
+          console.log(`    行 ${i} が見つかりません、スキップ`);
+          break;
+        }
 
         const row = currentRows[i];
 
@@ -825,11 +831,16 @@ class KannaScraper {
         console.log(`    カテゴリ: ${categoryName} (${itemCount}件)`);
 
         // 行の「...」メニューボタンをクリック
-        const menuBtn = await row.$('td:last-child button, td:last-child [class*="menu"], td:last-child [class*="icon"]');
+        const menuBtn = await row.$('td:last-child button, td:last-child [class*="menu"], td:last-child [class*="icon"], td:last-child svg');
 
         if (menuBtn) {
           console.log(`      メニューボタンをクリック...`);
-          await menuBtn.click();
+          try {
+            await menuBtn.click({ timeout: 5000 });
+          } catch (clickError) {
+            console.log(`      メニューボタンクリック失敗、スキップ`);
+            continue;
+          }
           await sleep(1500); // メニューが開くまで待つ
 
           // 「ダウンロード」メニュー項目をクリック
@@ -1319,7 +1330,7 @@ class KannaScraper {
             const text = el.textContent || '';
             if (text.includes(cardText.substring(0, 30))) {
               const rect = (el as HTMLElement).getBoundingClientRect();
-              if (rect.x > 200 && rect.height > 50 && rect.height < 300) {
+              if (rect.x > 100 && rect.height > 30 && rect.height < 400) {
                 (el as HTMLElement).click();
                 return true;
               }
@@ -1333,67 +1344,108 @@ class KannaScraper {
           continue;
         }
 
-        await sleep(1500);
+        await sleep(2000); // 報告詳細ページへの遷移を待つ
 
-        // 報告詳細からデータを抽出
-        const reportData = await this.page.evaluate(() => {
-          const data: { [key: string]: string } = {};
+        const reportPhotoDir = path.join(projectDir, `report_${i + 1}`);
+        if (!fs.existsSync(reportPhotoDir)) {
+          fs.mkdirSync(reportPhotoDir, { recursive: true });
+        }
 
-          // モーダルまたは詳細パネルを探す
-          const modal = document.querySelector('[role="dialog"], [class*="modal"], [class*="detail"], [class*="drawer"]');
-          const container = modal || document.body;
+        // 1. CSVダウンロードボタンをクリック
+        const csvDownloadBtn = this.page.getByText('CSVダウンロード', { exact: false });
+        const csvBtnVisible = await csvDownloadBtn.isVisible().catch(() => false);
 
-          // テキストコンテンツを取得
-          const text = container.textContent || '';
-          data['内容'] = text.substring(0, 1000);
-
-          return data;
-        });
-
-        // 写真があればダウンロード（ダウンロードボタンを直接探す）
-        const downloadBtn = await this.page.$('button:has-text("ダウンロード"), a:has-text("ダウンロード"), [aria-label*="ダウンロード"], [title*="ダウンロード"]');
-
-        if (downloadBtn) {
+        if (csvBtnVisible) {
           try {
-            console.log(`        ダウンロードボタンを検出`);
-            const reportPhotoDir = path.join(projectDir, `report_${i + 1}`);
-            if (!fs.existsSync(reportPhotoDir)) {
-              fs.mkdirSync(reportPhotoDir, { recursive: true });
-            }
-
+            console.log(`        CSVダウンロード中...`);
             const [download] = await Promise.all([
               this.page.waitForEvent('download', { timeout: 30000 }),
-              downloadBtn.click(),
+              csvDownloadBtn.click(),
             ]);
 
             const suggestedName = download.suggestedFilename();
-            const safeFilename = this.sanitizeFilename(suggestedName || `report_${i + 1}_attachment`);
+            const safeFilename = this.sanitizeFilename(suggestedName || `report_${i + 1}.csv`);
             const filepath = path.join(reportPhotoDir, safeFilename);
             await download.saveAs(filepath);
-            reportData['ダウンロードファイル'] = safeFilename;
-            console.log(`        ダウンロード完了: ${safeFilename}`);
+            console.log(`        CSVダウンロード完了: ${safeFilename}`);
           } catch (e) {
-            console.log(`        ダウンロード失敗`);
+            console.log(`        CSVダウンロード失敗`);
           }
         }
 
-        reports.push({ index: i + 1, ...reportData });
+        // 2. 写真があればクリックしてダウンロード
+        // 写真セクション内の画像を探す
+        const photoImages = await this.page.$$('img[src*="storage"], img[src*="photo"], img[src*="image"], [class*="photo"] img, [class*="image"] img');
+        console.log(`        写真: ${photoImages.length} 件検出`);
 
-        // 詳細画面を閉じる
-        await this.page.keyboard.press('Escape');
-        await sleep(500);
+        for (let j = 0; j < photoImages.length; j++) {
+          try {
+            // 画像を再取得（クリック後にDOMが変わる可能性）
+            const currentImages = await this.page.$$('img[src*="storage"], img[src*="photo"], img[src*="image"], [class*="photo"] img, [class*="image"] img');
+            if (j >= currentImages.length) break;
 
-        // 報告タブに戻る（必要に応じて）
-        const currentUrl = this.page.url();
-        if (!currentUrl.includes('work-reports')) {
-          await this.clickTab('報告');
-          await sleep(500);
+            console.log(`        写真 ${j + 1}/${photoImages.length} を開く...`);
+            await currentImages[j].click();
+            await sleep(1500);
+
+            // 全画面表示の「ダウンロード」ボタンを探す
+            const downloadBtn = this.page.getByText('ダウンロード', { exact: true });
+            const downloadBtnVisible = await downloadBtn.isVisible().catch(() => false);
+
+            if (downloadBtnVisible) {
+              try {
+                const [download] = await Promise.all([
+                  this.page.waitForEvent('download', { timeout: 30000 }),
+                  downloadBtn.click(),
+                ]);
+
+                const suggestedName = download.suggestedFilename();
+                const safeFilename = this.sanitizeFilename(suggestedName || `photo_${j + 1}.jpg`);
+                const filepath = path.join(reportPhotoDir, safeFilename);
+                await download.saveAs(filepath);
+                console.log(`        写真ダウンロード完了: ${safeFilename}`);
+              } catch (e) {
+                console.log(`        写真ダウンロード失敗`);
+              }
+            }
+
+            // 全画面表示を閉じる（閉じるボタンまたはEscape）
+            const closeBtn = await this.page.$('button:has-text("閉じる"), [aria-label="close"], [class*="close"]');
+            if (closeBtn) {
+              await closeBtn.click();
+            } else {
+              await this.page.keyboard.press('Escape');
+            }
+            await sleep(500);
+
+          } catch (photoError) {
+            console.log(`        写真処理エラー: ${photoError}`);
+            await this.page.keyboard.press('Escape');
+            await sleep(300);
+          }
+        }
+
+        reports.push({ index: i + 1 });
+
+        // 報告一覧に戻る
+        const backLink = this.page.getByText('報告一覧に戻る', { exact: false });
+        const backLinkVisible = await backLink.isVisible().catch(() => false);
+
+        if (backLinkVisible) {
+          await backLink.click();
+          await sleep(1500);
+        } else {
+          await this.page.goBack();
+          await sleep(1500);
         }
 
       } catch (e) {
         console.log(`      エラー: ${e}`);
         await this.page.keyboard.press('Escape');
         await sleep(300);
+        // 報告タブに戻る
+        await this.clickTab('報告');
+        await sleep(1000);
       }
     }
 
