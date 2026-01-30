@@ -1331,29 +1331,53 @@ class KannaScraper {
       try {
         console.log(`      [${i + 1}/${reportCardInfo.length}] ${reportCardInfo[i].text.substring(0, 50)}...`);
 
-        // 報告カードをクリック（page.evaluateで特定してクリック）
-        const clicked = await this.page.evaluate((cardText) => {
-          const allElements = Array.from(document.querySelectorAll('div, article, section'));
-          for (let j = 0; j < allElements.length; j++) {
-            const el = allElements[j];
-            const text = el.textContent || '';
-            if (text.includes(cardText.substring(0, 30))) {
-              const rect = (el as HTMLElement).getBoundingClientRect();
-              if (rect.x > 100 && rect.height > 30 && rect.height < 400) {
-                (el as HTMLElement).click();
-                return true;
+        // 報告カードをクリック - Playwrightのlocatorを使用
+        // 報告種別（開始報告、終了報告など）を含む要素を探してクリック
+        const reportKeywords = ['開始報告', '進捗報告', '終了報告', '完了報告', '修正依頼', '修正報告', '検収報告', '未入金報告', '入金報告', '着金報告'];
+        let clicked = false;
+
+        for (const keyword of reportKeywords) {
+          if (reportCardInfo[i].text.includes(keyword)) {
+            // このキーワードを含むカードを探す
+            const cards = this.page.locator(`text=${keyword}`);
+            const count = await cards.count();
+            console.log(`        "${keyword}" を含む要素: ${count} 件`);
+
+            if (count > 0) {
+              // 最初の可視要素をクリック
+              for (let k = 0; k < count; k++) {
+                const card = cards.nth(k);
+                const isVisible = await card.isVisible().catch(() => false);
+                if (isVisible) {
+                  console.log(`        カードをクリック...`);
+                  await card.click();
+                  clicked = true;
+                  break;
+                }
               }
             }
+            if (clicked) break;
           }
-          return false;
-        }, reportCardInfo[i].text);
+        }
 
         if (!clicked) {
-          console.log(`        クリック失敗`);
+          console.log(`        クリック失敗 - キーワードが見つかりません`);
           continue;
         }
 
-        await sleep(2000); // 報告詳細ページへの遷移を待つ
+        await sleep(2500); // 報告詳細ページへの遷移を待つ
+
+        // URLが変わったか確認（報告詳細ページは /work-reports/{uuid} の形式）
+        const currentUrl = this.page.url();
+        console.log(`        現在のURL: ${currentUrl}`);
+
+        // 報告詳細ページかどうかチェック（UUIDパターン: work-reports/で終わらない）
+        const isDetailPage = /\/work-reports\/[a-f0-9-]+/.test(currentUrl);
+
+        if (!isDetailPage) {
+          console.log(`        報告詳細ページに遷移していません、スキップ`);
+          continue;
+        }
 
         const reportPhotoDir = path.join(projectDir, `report_${i + 1}`);
         if (!fs.existsSync(reportPhotoDir)) {
