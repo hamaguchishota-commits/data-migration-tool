@@ -2031,7 +2031,6 @@ class KannaScraper {
       const listItems = document.querySelectorAll('[class*="list"] > div, [class*="row"], [role="row"]');
 
       // Excelボタンの存在確認
-      const excelBtns = document.querySelectorAll('button:has-text("Excel"), [class*="excel"], button');
       const btnsWithExcel = Array.from(document.querySelectorAll('button')).filter(b => b.textContent?.includes('Excel'));
 
       return {
@@ -2240,19 +2239,50 @@ class KannaScraper {
           console.log(`        Excelボタンクリック中...`);
 
           try {
-            const [download] = await Promise.all([
-              this.page.waitForEvent('download', { timeout: 30000 }),
-              btn.click(),
-            ]);
+            // Excelボタンをクリック
+            await btn.click();
+            await sleep(500);
 
-            const suggestedName = download.suggestedFilename();
-            const safeFilename = this.sanitizeFilename(suggestedName || `${formName}.xlsx`);
-            const filepath = path.join(dir, safeFilename);
-            await download.saveAs(filepath);
-            downloadedFiles.push(safeFilename);
-            console.log(`        ダウンロード完了: ${safeFilename}`);
+            // 「ダウンロードを開始しますか？」確認ダイアログの対応
+            const startButton = this.page.getByText('開始する', { exact: true });
+            const startButtonVisible = await startButton.isVisible().catch(() => false);
+
+            if (startButtonVisible) {
+              console.log(`        確認ダイアログ検出、「開始する」をクリック...`);
+              const [download] = await Promise.all([
+                this.page.waitForEvent('download', { timeout: 120000 }),
+                startButton.click(),
+              ]);
+
+              const suggestedName = download.suggestedFilename();
+              const safeFilename = this.sanitizeFilename(suggestedName || `${formName}.xlsx`);
+              const filepath = path.join(dir, safeFilename);
+              await download.saveAs(filepath);
+              downloadedFiles.push(safeFilename);
+              console.log(`        ダウンロード完了: ${safeFilename}`);
+            } else {
+              // 確認ダイアログがない場合（直接ダウンロードされる場合）
+              console.log(`        直接ダウンロード待機中...`);
+              try {
+                const download = await this.page.waitForEvent('download', { timeout: 5000 });
+                const suggestedName = download.suggestedFilename();
+                const safeFilename = this.sanitizeFilename(suggestedName || `${formName}.xlsx`);
+                const filepath = path.join(dir, safeFilename);
+                await download.saveAs(filepath);
+                downloadedFiles.push(safeFilename);
+                console.log(`        ダウンロード完了: ${safeFilename}`);
+              } catch {
+                console.log(`        ダウンロードイベントなし（ダイアログが閉じた可能性）`);
+              }
+            }
           } catch (e) {
             console.log(`        ダウンロード失敗: ${e}`);
+            // ダイアログが残っている場合は閉じる
+            const cancelBtn = this.page.getByText('キャンセル', { exact: true });
+            if (await cancelBtn.isVisible().catch(() => false)) {
+              await cancelBtn.click();
+              await sleep(300);
+            }
           }
 
           await sleep(500);
@@ -2384,19 +2414,48 @@ class KannaScraper {
         if (excelBtn) {
           try {
             console.log(`      Excelボタン発見、クリック中...`);
-            const [download] = await Promise.all([
-              this.page.waitForEvent('download', { timeout: 30000 }),
-              excelBtn.click(),
-            ]);
+            await excelBtn.click();
+            await sleep(500);
 
-            const suggestedName = download.suggestedFilename();
-            const safeFilename = this.sanitizeFilename(suggestedName || `${ledgerName}.xlsx`);
-            const filepath = path.join(projectDir, safeFilename);
-            await download.saveAs(filepath);
-            downloadedFiles.push(safeFilename);
-            console.log(`      Excelダウンロード完了: ${safeFilename}`);
-          } catch {
-            console.log(`      Excelダウンロード失敗（タイムアウト）`);
+            // 「ダウンロードを開始しますか？」確認ダイアログの対応
+            const startButton = this.page.getByText('開始する', { exact: true });
+            const startButtonVisible = await startButton.isVisible().catch(() => false);
+
+            if (startButtonVisible) {
+              console.log(`      確認ダイアログ検出、「開始する」をクリック...`);
+              const [download] = await Promise.all([
+                this.page.waitForEvent('download', { timeout: 120000 }),
+                startButton.click(),
+              ]);
+
+              const suggestedName = download.suggestedFilename();
+              const safeFilename = this.sanitizeFilename(suggestedName || `${ledgerName}.xlsx`);
+              const filepath = path.join(projectDir, safeFilename);
+              await download.saveAs(filepath);
+              downloadedFiles.push(safeFilename);
+              console.log(`      Excelダウンロード完了: ${safeFilename}`);
+            } else {
+              // 確認ダイアログがない場合
+              try {
+                const download = await this.page.waitForEvent('download', { timeout: 5000 });
+                const suggestedName = download.suggestedFilename();
+                const safeFilename = this.sanitizeFilename(suggestedName || `${ledgerName}.xlsx`);
+                const filepath = path.join(projectDir, safeFilename);
+                await download.saveAs(filepath);
+                downloadedFiles.push(safeFilename);
+                console.log(`      Excelダウンロード完了: ${safeFilename}`);
+              } catch {
+                console.log(`      Excelダウンロードイベントなし`);
+              }
+            }
+          } catch (e) {
+            console.log(`      Excelダウンロード失敗: ${e}`);
+            // ダイアログが残っている場合は閉じる
+            const cancelBtn = this.page.getByText('キャンセル', { exact: true });
+            if (await cancelBtn.isVisible().catch(() => false)) {
+              await cancelBtn.click();
+              await sleep(300);
+            }
           }
         }
 
@@ -2406,19 +2465,48 @@ class KannaScraper {
         if (pdfBtn) {
           try {
             console.log(`      PDFボタン発見、クリック中...`);
-            const [download] = await Promise.all([
-              this.page.waitForEvent('download', { timeout: 30000 }),
-              pdfBtn.click(),
-            ]);
+            await pdfBtn.click();
+            await sleep(500);
 
-            const suggestedName = download.suggestedFilename();
-            const safeFilename = this.sanitizeFilename(suggestedName || `${ledgerName}.pdf`);
-            const filepath = path.join(projectDir, safeFilename);
-            await download.saveAs(filepath);
-            downloadedFiles.push(safeFilename);
-            console.log(`      PDFダウンロード完了: ${safeFilename}`);
-          } catch {
-            console.log(`      PDFダウンロード失敗（タイムアウト）`);
+            // 「ダウンロードを開始しますか？」確認ダイアログの対応
+            const startButton = this.page.getByText('開始する', { exact: true });
+            const startButtonVisible = await startButton.isVisible().catch(() => false);
+
+            if (startButtonVisible) {
+              console.log(`      確認ダイアログ検出、「開始する」をクリック...`);
+              const [download] = await Promise.all([
+                this.page.waitForEvent('download', { timeout: 120000 }),
+                startButton.click(),
+              ]);
+
+              const suggestedName = download.suggestedFilename();
+              const safeFilename = this.sanitizeFilename(suggestedName || `${ledgerName}.pdf`);
+              const filepath = path.join(projectDir, safeFilename);
+              await download.saveAs(filepath);
+              downloadedFiles.push(safeFilename);
+              console.log(`      PDFダウンロード完了: ${safeFilename}`);
+            } else {
+              // 確認ダイアログがない場合
+              try {
+                const download = await this.page.waitForEvent('download', { timeout: 5000 });
+                const suggestedName = download.suggestedFilename();
+                const safeFilename = this.sanitizeFilename(suggestedName || `${ledgerName}.pdf`);
+                const filepath = path.join(projectDir, safeFilename);
+                await download.saveAs(filepath);
+                downloadedFiles.push(safeFilename);
+                console.log(`      PDFダウンロード完了: ${safeFilename}`);
+              } catch {
+                console.log(`      PDFダウンロードイベントなし`);
+              }
+            }
+          } catch (e) {
+            console.log(`      PDFダウンロード失敗: ${e}`);
+            // ダイアログが残っている場合は閉じる
+            const cancelBtn = this.page.getByText('キャンセル', { exact: true });
+            if (await cancelBtn.isVisible().catch(() => false)) {
+              await cancelBtn.click();
+              await sleep(300);
+            }
           }
         }
 
