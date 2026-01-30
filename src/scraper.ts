@@ -1992,7 +1992,35 @@ class KannaScraper {
       return [];
     }
 
-    await sleep(500);
+    // テーブルが読み込まれるまで待機
+    await sleep(2000);
+
+    // デバッグ: ページ構造を確認
+    const pageDebug = await this.page.evaluate(() => {
+      const tables = document.querySelectorAll('table');
+      const tbodies = document.querySelectorAll('tbody');
+      const trs = document.querySelectorAll('table tbody tr');
+      const allTrs = document.querySelectorAll('tr');
+
+      // リスト形式の要素も確認
+      const listItems = document.querySelectorAll('[class*="list"] > div, [class*="row"], [role="row"]');
+
+      // Excelボタンの存在確認
+      const excelBtns = document.querySelectorAll('button:has-text("Excel"), [class*="excel"], button');
+      const btnsWithExcel = Array.from(document.querySelectorAll('button')).filter(b => b.textContent?.includes('Excel'));
+
+      return {
+        tableCount: tables.length,
+        tbodyCount: tbodies.length,
+        tableRowCount: trs.length,
+        allRowCount: allTrs.length,
+        listItemCount: listItems.length,
+        excelButtonCount: btnsWithExcel.length,
+        // 最初のテーブルのHTML（デバッグ用）
+        firstTableHtml: tables[0]?.outerHTML?.substring(0, 500) || 'no table'
+      };
+    });
+    console.log('  帳票タブデバッグ:', JSON.stringify(pageDebug, null, 2));
 
     const folders: FolderItem[] = [];
 
@@ -2002,36 +2030,97 @@ class KannaScraper {
       folders.push({ name: 'root', files: rootFiles });
     }
 
-    // フォルダ一覧を取得
+    // フォルダ一覧を取得（Excelボタンがない行がフォルダ）
     const folderNames: string[] = [];
-    const formRows = await this.page.$$('table tbody tr');
 
-    for (const row of formRows) {
-      // フォルダ行かどうか確認（入力率%がないのがフォルダ）
-      const rowInfo = await row.evaluate((el) => {
-        const cells = el.querySelectorAll('td');
-        const hasInputRate = Array.from(cells).some(cell => cell.textContent?.includes('%'));
-        const nameCell = el.querySelector('td:first-child a, td:first-child');
-        const name = nameCell?.textContent?.trim() || '';
-        return { isFolder: !hasInputRate, name };
+    // テーブル読み込み待機
+    await sleep(1000);
+
+    // 方法1: フォルダアイコンを持つ行を探す
+    const folderInfo = await this.page.evaluate(() => {
+      const folders: string[] = [];
+      const rows = Array.from(document.querySelectorAll('table tbody tr'));
+
+      rows.forEach(row => {
+        // Excelボタンがあるかチェック
+        const hasExcelBtn = row.querySelector('button')?.textContent?.includes('Excel');
+        if (hasExcelBtn) return; // Excelボタンがある行は帳票、フォルダではない
+
+        // 名前を取得
+        const nameCell = row.querySelector('td:first-child');
+        const name = nameCell?.textContent?.trim();
+
+        // フォルダアイコンがあるか、またはダウンロード列にボタンがない行
+        const downloadCell = row.querySelector('td:last-child');
+        const hasDownloadBtn = downloadCell?.querySelector('button');
+
+        // ダウンロードボタン（Excelボタン）がない行はフォルダの可能性が高い
+        if (name && !hasDownloadBtn) {
+          // ただし、ヘッダー行は除外
+          if (name !== '帳票名' && !name.includes('公開範囲')) {
+            folders.push(name);
+          }
+        }
       });
 
-      if (rowInfo.isFolder && rowInfo.name) {
-        folderNames.push(rowInfo.name);
-      }
-    }
+      return folders;
+    });
 
-    console.log(`  ${folderNames.length} 個のフォルダを検出`);
+    folderNames.push(...folderInfo);
+    console.log(`  ${folderNames.length} 個のフォルダを検出: ${folderNames.join(', ')}`);
+
+    // フォルダが検出されなかった場合、別の方法でフォルダを探す
+    if (folderNames.length === 0) {
+      // フォルダアイコン（svg）を持つ行を探す
+      const altFolderInfo = await this.page.evaluate(() => {
+        const folders: string[] = [];
+        const rows = Array.from(document.querySelectorAll('table tbody tr, [class*="row"]'));
+
+        rows.forEach(row => {
+          // フォルダアイコンの存在確認（svgまたはクラス名）
+          const hasExcelBtn = Array.from(row.querySelectorAll('button')).some((b: Element) => (b as HTMLElement).textContent?.includes('Excel'));
+
+          if (!hasExcelBtn) {
+            const nameEl = row.querySelector('td:first-child, [class*="name"]');
+            const name = nameEl?.textContent?.trim();
+            if (name && name !== '帳票名') {
+              folders.push(name);
+            }
+          }
+        });
+
+        return folders;
+      });
+      folderNames.push(...altFolderInfo);
+      console.log(`  代替検出: ${altFolderInfo.length} 個のフォルダ`);
+    }
 
     // 各フォルダに入ってダウンロード
     for (const folderName of folderNames) {
       console.log(`    フォルダ: ${folderName}`);
 
       try {
-        // フォルダをクリック
-        const folderLink = this.page.locator(`table tbody tr:has-text("${folderName}") td:first-child`).first();
-        await folderLink.click();
-        await sleep(1500);
+        // フォルダをクリック（フォルダ名のリンクまたはセル）
+        const folderClicked = await this.page.evaluate((name) => {
+          const rows = Array.from(document.querySelectorAll('table tbody tr'));
+          for (let i = 0; i < rows.length; i++) {
+            const row = rows[i];
+            const nameCell = row.querySelector('td:first-child');
+            if (nameCell?.textContent?.trim() === name) {
+              const link = nameCell.querySelector('a') || nameCell;
+              (link as HTMLElement).click();
+              return true;
+            }
+          }
+          return false;
+        }, folderName);
+
+        if (!folderClicked) {
+          console.log(`      フォルダ「${folderName}」のクリックに失敗`);
+          continue;
+        }
+
+        await sleep(2000);
 
         // フォルダ用ディレクトリ
         const safeFolderName = this.sanitizeFilename(folderName);
@@ -2041,19 +2130,38 @@ class KannaScraper {
         }
 
         // フォルダ内の帳票をダウンロード
+        console.log(`      フォルダ内の帳票を検索中...`);
         const folderFiles = await this.downloadFormsFromCurrentView(folderDir);
         if (folderFiles.length > 0) {
           folders.push({ name: safeFolderName, files: folderFiles });
         }
+        console.log(`      フォルダ内: ${folderFiles.length} ファイル`);
 
-        // TOPに戻る
-        const topLink = await this.page.$('a:has-text("TOP"), [class*="breadcrumb"] a:first-child');
+        // TOPに戻る（パンくずリストまたは帳票タブ再クリック）
+        let backSuccess = false;
+
+        // 方法1: パンくずリストから「TOP」をクリック
+        const topLink = await this.page.$('a:has-text("TOP"), [class*="breadcrumb"] a:first-child, nav a:first-child');
         if (topLink) {
           await topLink.click();
-        } else {
+          backSuccess = true;
+        }
+
+        // 方法2: 戻るボタン
+        if (!backSuccess) {
+          const backBtn = await this.page.$('button:has-text("戻る"), [class*="back"]');
+          if (backBtn) {
+            await backBtn.click();
+            backSuccess = true;
+          }
+        }
+
+        // 方法3: 帳票タブを再クリック
+        if (!backSuccess) {
           await this.clickTab('帳票');
         }
-        await sleep(1000);
+
+        await sleep(1500);
 
       } catch (e) {
         console.log(`      フォルダ処理エラー: ${e}`);
@@ -2074,43 +2182,46 @@ class KannaScraper {
     if (!this.page) return [];
 
     const downloadedFiles: string[] = [];
-    const formRows = await this.page.$$('table tbody tr');
-    console.log(`      帳票行数: ${formRows.length}`);
 
-    for (let i = 0; i < formRows.length; i++) {
-      try {
-        const currentRows = await this.page.$$('table tbody tr');
-        if (i >= currentRows.length) break;
+    // テーブルの読み込みを待機
+    await sleep(1000);
 
-        const row = currentRows[i];
+    // 方法1: Excelボタンを直接探す（より確実）
+    const excelButtons = await this.page.$$('button:has-text("Excel")');
+    console.log(`      Excelボタン数: ${excelButtons.length}`);
 
-        // ファイル行かどうか確認（入力率%があるのがファイル、またはExcelボタンがあるのがファイル）
-        const rowInfo = await row.evaluate((el) => {
-          const cells = el.querySelectorAll('td');
-          const hasInputRate = Array.from(cells).some(cell => cell.textContent?.includes('%'));
-          const hasExcelBtn = !!el.querySelector('button:not([aria-label])');
-          const nameCell = el.querySelector('td:first-child a, td:first-child span, td:first-child');
-          const name = nameCell?.textContent?.trim() || '';
-          return { isFile: hasInputRate || hasExcelBtn, name };
-        });
+    if (excelButtons.length > 0) {
+      for (let i = 0; i < excelButtons.length; i++) {
+        try {
+          // DOMが更新されている可能性があるので毎回取得
+          const currentButtons = await this.page.$$('button:has-text("Excel")');
+          if (i >= currentButtons.length) break;
 
-        if (!rowInfo.isFile || !rowInfo.name) continue;
+          const btn = currentButtons[i];
 
-        console.log(`      [${i + 1}] ${rowInfo.name}`);
+          // ボタンの親行から帳票名を取得
+          const formName = await btn.evaluate((el) => {
+            const row = el.closest('tr');
+            if (row) {
+              const nameCell = row.querySelector('td:first-child');
+              return nameCell?.textContent?.trim() || '';
+            }
+            // tr以外の構造の場合
+            const container = el.closest('[class*="row"], [class*="item"]');
+            return container?.querySelector('[class*="name"], span, a')?.textContent?.trim() || `帳票_${Date.now()}`;
+          });
 
-        // 方法1: 直接「Excel」ボタンを探す（行内）
-        const excelBtn = await row.$('button:has-text("Excel"), a:has-text("Excel"), [class*="download"]:has-text("Excel")');
+          console.log(`      [${i + 1}] ${formName}`);
+          console.log(`        Excelボタンクリック中...`);
 
-        if (excelBtn) {
-          console.log(`        Excelボタン発見、クリック中...`);
           try {
             const [download] = await Promise.all([
               this.page.waitForEvent('download', { timeout: 30000 }),
-              excelBtn.click(),
+              btn.click(),
             ]);
 
             const suggestedName = download.suggestedFilename();
-            const safeFilename = this.sanitizeFilename(suggestedName || `${rowInfo.name}.xlsx`);
+            const safeFilename = this.sanitizeFilename(suggestedName || `${formName}.xlsx`);
             const filepath = path.join(dir, safeFilename);
             await download.saveAs(filepath);
             downloadedFiles.push(safeFilename);
@@ -2118,8 +2229,40 @@ class KannaScraper {
           } catch (e) {
             console.log(`        ダウンロード失敗: ${e}`);
           }
-        } else {
-          // 方法2: 「...」メニューをクリック
+
+          await sleep(500);
+        } catch (e) {
+          console.log(`      エラー: ${e}`);
+        }
+      }
+    }
+
+    // 方法2: テーブル行を探す（Excelボタンが見つからない場合のフォールバック）
+    if (downloadedFiles.length === 0) {
+      const formRows = await this.page.$$('table tbody tr');
+      console.log(`      テーブル行数: ${formRows.length}`);
+
+      for (let i = 0; i < formRows.length; i++) {
+        try {
+          const currentRows = await this.page.$$('table tbody tr');
+          if (i >= currentRows.length) break;
+
+          const row = currentRows[i];
+
+          // ファイル行かどうか確認
+          const rowInfo = await row.evaluate((el) => {
+            const cells = el.querySelectorAll('td');
+            const hasInputRate = Array.from(cells).some(cell => cell.textContent?.includes('%'));
+            const nameCell = el.querySelector('td:first-child a, td:first-child span, td:first-child');
+            const name = nameCell?.textContent?.trim() || '';
+            return { isFile: hasInputRate, name };
+          });
+
+          if (!rowInfo.isFile || !rowInfo.name) continue;
+
+          console.log(`      [${i + 1}] ${rowInfo.name}`);
+
+          // 「...」メニューからダウンロード
           const menuBtn = await row.$('td:last-child button, td:last-child [class*="menu"]');
 
           if (menuBtn) {
@@ -2149,17 +2292,14 @@ class KannaScraper {
               console.log(`        ダウンロードメニュー見つからず`);
               await this.page.keyboard.press('Escape');
             }
-          } else {
-            console.log(`        ボタン見つからず`);
           }
+
+          await sleep(300);
+        } catch (e) {
+          console.log(`      エラー: ${e}`);
+          await this.page.keyboard.press('Escape');
+          await sleep(200);
         }
-
-        await sleep(300);
-
-      } catch (e) {
-        console.log(`      エラー: ${e}`);
-        await this.page.keyboard.press('Escape');
-        await sleep(200);
       }
     }
 
