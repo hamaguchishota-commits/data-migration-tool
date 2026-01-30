@@ -825,99 +825,78 @@ class KannaScraper {
         console.log(`    カテゴリ: ${categoryName} (${itemCount}件)`);
 
         // 行の「...」メニューボタンをクリック
-        const menuBtn = await row.$('td:last-child button, td:last-child [class*="menu"], td:last-child');
+        const menuBtn = await row.$('td:last-child button, td:last-child [class*="menu"], td:last-child [class*="icon"]');
 
         if (menuBtn) {
           await menuBtn.click();
           await sleep(1000); // メニューが開くまで少し長めに待つ
 
-          // 「ダウンロード」メニュー項目をクリック（テキストで検索）
-          // KANNAのメニューはMaterial UIベースなので、getByTextを使用
-          const downloadMenuItem = this.page.getByText('ダウンロード', { exact: true });
-          const isVisible = await downloadMenuItem.isVisible().catch(() => false);
+          // 「ダウンロード」メニュー項目をクリック
+          // Material UIのMenuはrole="menu"の中にrole="menuitem"がある
+          // または単純なdiv/liのリストの場合もある
+          let downloadClicked = false;
 
-          if (isVisible) {
-            console.log(`      ダウンロードメニュー発見、クリック中...`);
-            try {
-              // クリックしてからダウンロード開始を待つ（ZIPファイル作成に時間がかかる場合がある）
-              await downloadMenuItem.click();
-              console.log(`      ダウンロード開始を待機中（最大2分）...`);
-
-              const download = await this.page.waitForEvent('download', { timeout: 120000 });
-
-              const suggestedName = download.suggestedFilename();
-              const safeFilename = this.sanitizeFilename(suggestedName || `${safeCategoryName}.zip`);
-              const filepath = path.join(projectDir, safeFilename);
-              await download.saveAs(filepath);
-              folders.push({ name: safeCategoryName, files: [safeFilename] });
-              console.log(`      フォルダダウンロード完了: ${safeFilename}`);
-            } catch {
-              console.log(`      フォルダダウンロード失敗（タイムアウト）- フォルダ内の個別ダウンロードを試行`);
-              await this.page.keyboard.press('Escape');
-              await sleep(500);
-
-              // フォールバック: フォルダをクリックして中のファイルを個別にダウンロード
+          // 方法1: role="menuitem"を使う
+          const menuItems = await this.page.$$('[role="menuitem"], [role="menu"] li, [class*="MuiMenuItem"], [class*="menu-item"]');
+          for (const item of menuItems) {
+            const text = await item.textContent();
+            if (text?.trim() === 'ダウンロード') {
+              console.log(`      ダウンロードメニュー発見（menuitem）、クリック中...`);
               try {
-                const currentRows2 = await this.page.$$('table tbody tr');
-                if (i < currentRows2.length) {
-                  const folderLink = await currentRows2[i].$('td:first-child a, td:first-child');
-                  if (folderLink) {
-                    await folderLink.click();
-                    await sleep(2000);
+                await item.click();
+                downloadClicked = true;
+                console.log(`      ダウンロード開始を待機中（最大2分）...`);
 
-                    const categoryDir = path.join(projectDir, safeCategoryName);
-                    if (!fs.existsSync(categoryDir)) {
-                      fs.mkdirSync(categoryDir, { recursive: true });
-                    }
+                const download = await this.page.waitForEvent('download', { timeout: 120000 });
 
-                    const files = await this.downloadFilesFromList(categoryDir);
-                    if (files.length > 0) {
-                      folders.push({ name: safeCategoryName, files });
-                      console.log(`      個別ダウンロード完了: ${files.length} ファイル`);
-                    }
+                const suggestedName = download.suggestedFilename();
+                const safeFilename = this.sanitizeFilename(suggestedName || `${safeCategoryName}.zip`);
+                const filepath = path.join(projectDir, safeFilename);
+                await download.saveAs(filepath);
+                folders.push({ name: safeCategoryName, files: [safeFilename] });
+                console.log(`      フォルダダウンロード完了: ${safeFilename}`);
+              } catch (downloadError) {
+                console.log(`      フォルダダウンロード失敗（タイムアウト）`);
+                await this.page.keyboard.press('Escape');
+              }
+              break;
+            }
+          }
 
-                    // 戻るボタンまたはパンくずで戻る
-                    await this.page.goBack();
-                    await sleep(1000);
-                  }
+          // 方法2: getByTextを使う（方法1で見つからなかった場合）
+          if (!downloadClicked) {
+            const downloadMenuItem = this.page.getByText('ダウンロード', { exact: true });
+            const count = await downloadMenuItem.count();
+            if (count > 0) {
+              // 最後に表示されているもの（メニュー内のもの）をクリック
+              const lastItem = downloadMenuItem.last();
+              const isVisible = await lastItem.isVisible().catch(() => false);
+              if (isVisible) {
+                console.log(`      ダウンロードメニュー発見（getByText）、クリック中...`);
+                try {
+                  await lastItem.click();
+                  downloadClicked = true;
+                  console.log(`      ダウンロード開始を待機中（最大2分）...`);
+
+                  const download = await this.page.waitForEvent('download', { timeout: 120000 });
+
+                  const suggestedName = download.suggestedFilename();
+                  const safeFilename = this.sanitizeFilename(suggestedName || `${safeCategoryName}.zip`);
+                  const filepath = path.join(projectDir, safeFilename);
+                  await download.saveAs(filepath);
+                  folders.push({ name: safeCategoryName, files: [safeFilename] });
+                  console.log(`      フォルダダウンロード完了: ${safeFilename}`);
+                } catch (downloadError) {
+                  console.log(`      フォルダダウンロード失敗（タイムアウト）`);
+                  await this.page.keyboard.press('Escape');
                 }
-              } catch (fallbackError) {
-                console.log(`      個別ダウンロードも失敗: ${fallbackError}`);
               }
             }
-          } else {
-            console.log(`      ダウンロードメニューが見つかりません - フォルダを開いて個別ダウンロード`);
+          }
+
+          if (!downloadClicked) {
+            console.log(`      ダウンロードメニューが見つかりません - スキップ`);
             await this.page.keyboard.press('Escape');
-            await sleep(500);
-
-            // フォルダをクリックして中のファイルを個別にダウンロード
-            try {
-              const currentRows2 = await this.page.$$('table tbody tr');
-              if (i < currentRows2.length) {
-                const folderLink = await currentRows2[i].$('td:first-child a, td:first-child');
-                if (folderLink) {
-                  await folderLink.click();
-                  await sleep(2000);
-
-                  const categoryDir = path.join(projectDir, safeCategoryName);
-                  if (!fs.existsSync(categoryDir)) {
-                    fs.mkdirSync(categoryDir, { recursive: true });
-                  }
-
-                  const files = await this.downloadFilesFromList(categoryDir);
-                  if (files.length > 0) {
-                    folders.push({ name: safeCategoryName, files });
-                    console.log(`      個別ダウンロード完了: ${files.length} ファイル`);
-                  }
-
-                  // 戻るボタンまたはパンくずで戻る
-                  await this.page.goBack();
-                  await sleep(1000);
-                }
-              }
-            } catch (fallbackError) {
-              console.log(`      個別ダウンロードも失敗: ${fallbackError}`);
-            }
           }
         } else {
           console.log(`      メニューボタンが見つかりません`);
