@@ -105,7 +105,7 @@ class KannaScraper {
     await this.page.waitForURL((url) => !url.pathname.includes('/signin'), { timeout: 30000 });
 
     // ダッシュボードの要素が表示されるまで待機
-    await sleep(2000);
+    await sleep(1000);
 
     // デバッグ用スクリーンショット
     await this.saveScreenshot('after_login');
@@ -272,7 +272,7 @@ class KannaScraper {
         await allProjectsOption.waitFor({ state: 'visible', timeout: 3000 });
         await allProjectsOption.click();
         console.log('  「すべての案件」を選択しました');
-        await sleep(1500); // リスト再読み込みを待機
+        await sleep(1000); // リスト再読み込みを待機
       } catch {
         // 既に「すべての案件」が選択されている場合、ESCで閉じる
         await this.page.keyboard.press('Escape');
@@ -323,7 +323,7 @@ class KannaScraper {
           if (!isChecked) {
             await parentCheckboxLabel.click();
             console.log('  「親案件」チェックボックスをオンにしました');
-            await sleep(1500); // リスト再読み込みを待機
+            await sleep(1000); // リスト再読み込みを待機
           } else {
             console.log('  「親案件」チェックボックスは既にオン');
           }
@@ -344,7 +344,7 @@ class KannaScraper {
             if (!isChecked) {
               await checkbox.click();
               console.log('  「親案件」チェックボックスをオンにしました');
-              await sleep(1500);
+              await sleep(1000);
             } else {
               console.log('  「親案件」チェックボックスは既にオン');
             }
@@ -372,7 +372,7 @@ class KannaScraper {
     console.log('案件一覧を取得中（無限スクロール対応）...');
 
     // テーブルが表示されるまで待機
-    await sleep(1500);
+    await sleep(1000);
 
     // ページに表示されている総件数を取得（例: "86件"）
     let expectedTotal = 0;
@@ -2191,8 +2191,9 @@ async function main(): Promise<void> {
       // 1. 概要タブ - CSVダウンロード
       const overviewCSV = await scraper.downloadOverviewCSV(project.name);
 
-      // 2. 工程表タブからExcelをダウンロード
-      const schedule = await scraper.downloadSchedule(project.name);
+      // 2. 工程表タブ - スキップ（メール送信方式のため自動取得不可）
+      // const schedule = await scraper.downloadSchedule(project.name);
+      const schedule: string[] = [];
 
       // 3. タスクタブはスキップ（必要に応じて追加可能）
 
