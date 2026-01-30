@@ -1276,9 +1276,9 @@ class KannaScraper {
         // 報告カードの特徴:
         // - メインコンテンツ領域内（x > 100）
         // - 適切なサイズ（width > 200, height > 30, height < 400）
-        // - 「開始報告」「終了報告」「進捗報告」「作業報告」などのキーワードを含む
+        // - 報告種別のキーワードを含む
         // - または時刻っぽい文字列（XX:XX形式）を含む
-        const hasReportKeyword = /開始報告|終了報告|進捗報告|作業報告|日報|週報|月報|完了報告|中間報告/.test(text);
+        const hasReportKeyword = /開始報告|進捗報告|終了報告|完了報告|修正依頼|修正報告|検収報告|未入金報告|入金報告|着金報告|作業報告|日報|週報|月報|中間報告/.test(text);
         const hasTimeFormat = /\d{1,2}:\d{2}/.test(text);
         const isInMainArea = rect.x > 100 && rect.width > 200;
         const hasProperSize = rect.height > 30 && rect.height < 400 && rect.width < 900;
