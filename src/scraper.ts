@@ -829,17 +829,21 @@ class KannaScraper {
 
         if (menuBtn) {
           await menuBtn.click();
-          await sleep(500);
+          await sleep(1000); // メニューが開くまで少し長めに待つ
 
-          // 「ダウンロード」メニュー項目をクリック
-          const downloadMenuItem = await this.page.$('[role="menuitem"]:has-text("ダウンロード"), [role="menu"] :has-text("ダウンロード"), [class*="menu"] :has-text("ダウンロード"), [class*="dropdown"] :has-text("ダウンロード"), li:has-text("ダウンロード"), button:has-text("ダウンロード"), a:has-text("ダウンロード")');
+          // 「ダウンロード」メニュー項目をクリック（テキストで検索）
+          // KANNAのメニューはMaterial UIベースなので、getByTextを使用
+          const downloadMenuItem = this.page.getByText('ダウンロード', { exact: true });
+          const isVisible = await downloadMenuItem.isVisible().catch(() => false);
 
-          if (downloadMenuItem) {
+          if (isVisible) {
+            console.log(`      ダウンロードメニュー発見、クリック中...`);
             try {
-              const [download] = await Promise.all([
-                this.page.waitForEvent('download', { timeout: 120000 }), // フォルダダウンロードは時間がかかる（2分）
-                downloadMenuItem.click(),
-              ]);
+              // クリックしてからダウンロード開始を待つ（ZIPファイル作成に時間がかかる場合がある）
+              await downloadMenuItem.click();
+              console.log(`      ダウンロード開始を待機中（最大2分）...`);
+
+              const download = await this.page.waitForEvent('download', { timeout: 120000 });
 
               const suggestedName = download.suggestedFilename();
               const safeFilename = this.sanitizeFilename(suggestedName || `${safeCategoryName}.zip`);
