@@ -1407,41 +1407,59 @@ class KannaScraper {
         }
 
         // 2. 写真があればクリックしてダウンロード
-        // 写真セクション内の画像を探す（より広いセレクター）
-        // KANNAの報告詳細では画像は様々な形式で表示される
-        const allImages: ElementHandle<HTMLImageElement>[] = await this.page.$$('img');
+        // KANNAの報告詳細では「写真」ラベルの行にサムネイルがある
+        // まず「写真」セクションを探す
+        console.log(`        写真セクションを検索中...`);
 
-        // 適切なサイズの画像だけをフィルタリング（サムネイルや小さなアイコンを除外）
-        const clickablePhotos: ElementHandle<HTMLImageElement>[] = [];
-        console.log(`        [DEBUG] 全img要素を検査中...`);
-        for (let idx = 0; idx < allImages.length; idx++) {
-          const img = allImages[idx];
+        // 方法1: 「写真」ラベルの親要素内のクリック可能な画像要素を探す
+        const photoSection = await this.page.$('text=写真 >> xpath=../.. >> div[style*="background-image"], text=写真 >> xpath=../.. >> img, text=写真 >> xpath=.. >> div[style*="background-image"]');
+
+        // 方法2: background-imageを持つdiv要素を探す（写真サムネイル用）
+        const bgImageDivs = await this.page.$$('div[style*="background-image"]');
+        console.log(`        [DEBUG] background-image付きdiv: ${bgImageDivs.length}件`);
+
+        // 方法3: 「写真」テキストの近くにある画像的な要素
+        const photoRowImages = await this.page.$$('div:has(> div:text-is("写真")) img, div:has(> div:text-is("写真")) div[style*="background"]');
+        console.log(`        [DEBUG] 写真行内の要素: ${photoRowImages.length}件`);
+
+        // 全てのクリック可能な写真候補を収集
+        const clickablePhotos: ElementHandle<Element>[] = [];
+
+        // background-image divをフィルタ
+        for (const div of bgImageDivs) {
           try {
-            const box = await img.boundingBox();
-            const src = await img.getAttribute('src');
-            const srcShort = src ? (src.length > 80 ? src.substring(0, 80) + '...' : src) : 'null';
-
-            // デバッグ: 各imgの情報を出力
-            const reasons: string[] = [];
-            if (!box) reasons.push('box=null');
-            else if (box.width < 50) reasons.push(`width=${box.width}<50`);
-            else if (box.height < 50) reasons.push(`height=${box.height}<50`);
-            if (!src) reasons.push('src=null');
-            else if (src.startsWith('data:')) reasons.push('data:URL');
-            else if (src.includes('icon')) reasons.push('contains "icon"');
-
-            if (reasons.length > 0) {
-              console.log(`        [DEBUG] img[${idx}]: 除外 (${reasons.join(', ')}) src=${srcShort}`);
-            } else {
-              console.log(`        [DEBUG] img[${idx}]: OK (${box?.width}x${box?.height}) src=${srcShort}`);
-              clickablePhotos.push(img);
+            const box = await div.boundingBox();
+            const style = await div.getAttribute('style');
+            if (box && box.width >= 50 && box.height >= 50 && style) {
+              // storage.googleapis.comやkanna関連のURLを含むか確認
+              if (style.includes('storage') || style.includes('kanna') || style.includes('blob')) {
+                console.log(`        [DEBUG] 写真候補発見: ${box.width}x${box.height}`);
+                clickablePhotos.push(div);
+              }
             }
-          } catch (e) {
-            console.log(`        [DEBUG] img[${idx}]: エラー ${e}`);
+          } catch {
+            // 無視
           }
         }
 
-        console.log(`        写真: ${clickablePhotos.length} 件検出（全img: ${allImages.length}件）`);
+        // 通常のimg要素も確認（ただしトラッキングピクセルを除外）
+        const allImages: ElementHandle<HTMLImageElement>[] = await this.page.$$('img');
+        for (const img of allImages) {
+          try {
+            const box = await img.boundingBox();
+            const src = await img.getAttribute('src');
+            if (box && box.width >= 50 && box.height >= 50 && src &&
+                !src.startsWith('data:') && !src.includes('icon') &&
+                !src.includes('bat.bing') && !src.includes('tracking')) {
+              console.log(`        [DEBUG] img候補発見: ${box.width}x${box.height} src=${src.substring(0, 60)}...`);
+              clickablePhotos.push(img);
+            }
+          } catch {
+            // 無視
+          }
+        }
+
+        console.log(`        写真: ${clickablePhotos.length} 件検出`);
 
         for (let j = 0; j < clickablePhotos.length; j++) {
           try {
