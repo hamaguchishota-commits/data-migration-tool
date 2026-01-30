@@ -2213,11 +2213,34 @@ class KannaScraper {
 
         console.log(`    [${i + 1}/${ledgerRows.length}] ${ledgerName}`);
 
-        // PDFボタンをクリック
-        const pdfBtn = await row.$('button:has-text("PDF"), a:has-text("PDF"), [class*="pdf"]');
+        // Excelボタンをクリック（優先）
+        const excelBtn = await row.$('button:has-text("Excel"), a:has-text("Excel")');
+
+        if (excelBtn) {
+          try {
+            console.log(`      Excelボタン発見、クリック中...`);
+            const [download] = await Promise.all([
+              this.page.waitForEvent('download', { timeout: 30000 }),
+              excelBtn.click(),
+            ]);
+
+            const suggestedName = download.suggestedFilename();
+            const safeFilename = this.sanitizeFilename(suggestedName || `${ledgerName}.xlsx`);
+            const filepath = path.join(projectDir, safeFilename);
+            await download.saveAs(filepath);
+            downloadedFiles.push(safeFilename);
+            console.log(`      Excelダウンロード完了: ${safeFilename}`);
+          } catch {
+            console.log(`      Excelダウンロード失敗（タイムアウト）`);
+          }
+        }
+
+        // PDFボタンもクリック
+        const pdfBtn = await row.$('button:has-text("PDF"), a:has-text("PDF")');
 
         if (pdfBtn) {
           try {
+            console.log(`      PDFボタン発見、クリック中...`);
             const [download] = await Promise.all([
               this.page.waitForEvent('download', { timeout: 30000 }),
               pdfBtn.click(),
@@ -2228,12 +2251,14 @@ class KannaScraper {
             const filepath = path.join(projectDir, safeFilename);
             await download.saveAs(filepath);
             downloadedFiles.push(safeFilename);
-            console.log(`      ダウンロード完了: ${safeFilename}`);
+            console.log(`      PDFダウンロード完了: ${safeFilename}`);
           } catch {
-            console.log(`      ダウンロード失敗（タイムアウト）`);
+            console.log(`      PDFダウンロード失敗（タイムアウト）`);
           }
-        } else {
-          console.log(`      PDFボタンが見つかりません`);
+        }
+
+        if (!excelBtn && !pdfBtn) {
+          console.log(`      ダウンロードボタンが見つかりません`);
         }
 
         await sleep(300);
