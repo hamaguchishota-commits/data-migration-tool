@@ -1409,10 +1409,10 @@ class KannaScraper {
         // 2. 写真があればクリックしてダウンロード
         // 写真セクション内の画像を探す（より広いセレクター）
         // KANNAの報告詳細では画像は様々な形式で表示される
-        const allImages = await this.page.$$('img');
+        const allImages: ElementHandle<HTMLImageElement>[] = await this.page.$$('img');
 
         // 適切なサイズの画像だけをフィルタリング（サムネイルや小さなアイコンを除外）
-        const clickablePhotos: (typeof allImages)[number][] = [];
+        const clickablePhotos: ElementHandle<HTMLImageElement>[] = [];
         for (const img of allImages) {
           try {
             const box = await img.boundingBox();
