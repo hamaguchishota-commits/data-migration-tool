@@ -1407,18 +1407,31 @@ class KannaScraper {
         }
 
         // 2. 写真があればクリックしてダウンロード
-        // 写真セクション内の画像を探す
-        const photoImages = await this.page.$$('img[src*="storage"], img[src*="photo"], img[src*="image"], [class*="photo"] img, [class*="image"] img');
-        console.log(`        写真: ${photoImages.length} 件検出`);
+        // 写真セクション内の画像を探す（より広いセレクター）
+        // KANNAの報告詳細では画像は様々な形式で表示される
+        const photoImages = await this.page.$$('img');
 
-        for (let j = 0; j < photoImages.length; j++) {
+        // 適切なサイズの画像だけをフィルタリング（サムネイルや小さなアイコンを除外）
+        const clickablePhotos: typeof photoImages = [];
+        for (const img of photoImages) {
           try {
-            // 画像を再取得（クリック後にDOMが変わる可能性）
-            const currentImages = await this.page.$$('img[src*="storage"], img[src*="photo"], img[src*="image"], [class*="photo"] img, [class*="image"] img');
-            if (j >= currentImages.length) break;
+            const box = await img.boundingBox();
+            const src = await img.getAttribute('src');
+            // サイズが50x50以上で、data:URLやアイコンでない画像
+            if (box && box.width >= 50 && box.height >= 50 && src && !src.startsWith('data:') && !src.includes('icon')) {
+              clickablePhotos.push(img);
+            }
+          } catch (e) {
+            // 無視
+          }
+        }
 
-            console.log(`        写真 ${j + 1}/${photoImages.length} を開く...`);
-            await currentImages[j].click();
+        console.log(`        写真: ${clickablePhotos.length} 件検出（全img: ${photoImages.length}件）`);
+
+        for (let j = 0; j < clickablePhotos.length; j++) {
+          try {
+            console.log(`        写真 ${j + 1}/${clickablePhotos.length} を開く...`);
+            await clickablePhotos[j].click();
             await sleep(1500);
 
             // 全画面表示の「ダウンロード」ボタンを探す
