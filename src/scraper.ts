@@ -828,8 +828,9 @@ class KannaScraper {
         const menuBtn = await row.$('td:last-child button, td:last-child [class*="menu"], td:last-child [class*="icon"]');
 
         if (menuBtn) {
+          console.log(`      メニューボタンをクリック...`);
           await menuBtn.click();
-          await sleep(1000); // メニューが開くまで少し長めに待つ
+          await sleep(1500); // メニューが開くまで待つ
 
           // 「ダウンロード」メニュー項目をクリック
           // Material UIのMenuはrole="menu"の中にrole="menuitem"がある
@@ -838,8 +839,10 @@ class KannaScraper {
 
           // 方法1: role="menuitem"を使う
           const menuItems = await this.page.$$('[role="menuitem"], [role="menu"] li, [class*="MuiMenuItem"], [class*="menu-item"]');
+          console.log(`      メニューアイテム数: ${menuItems.length}`);
           for (const item of menuItems) {
             const text = await item.textContent();
+            console.log(`        メニュー項目: "${text?.trim()}"`);
             if (text?.trim() === 'ダウンロード') {
               console.log(`      ダウンロードメニュー発見（menuitem）、クリック中...`);
               try {
@@ -1271,16 +1274,16 @@ class KannaScraper {
         const rect = el.getBoundingClientRect();
 
         // 報告カードの特徴:
-        // - メインコンテンツ領域内（x > 200）
-        // - 適切なサイズ（width > 200, height > 50, height < 300）
-        // - 「終了報告」「進捗報告」「作業報告」などのキーワードを含む
-        // - 時刻っぽい文字列（XX:XX形式）を含む
-        const hasReportKeyword = /終了報告|進捗報告|作業報告|日報|週報|月報|報告/.test(text);
+        // - メインコンテンツ領域内（x > 100）
+        // - 適切なサイズ（width > 200, height > 30, height < 400）
+        // - 「開始報告」「終了報告」「進捗報告」「作業報告」などのキーワードを含む
+        // - または時刻っぽい文字列（XX:XX形式）を含む
+        const hasReportKeyword = /開始報告|終了報告|進捗報告|作業報告|日報|週報|月報|完了報告|中間報告/.test(text);
         const hasTimeFormat = /\d{1,2}:\d{2}/.test(text);
-        const isInMainArea = rect.x > 200 && rect.width > 200;
-        const hasProperSize = rect.height > 50 && rect.height < 300 && rect.width < 800;
+        const isInMainArea = rect.x > 100 && rect.width > 200;
+        const hasProperSize = rect.height > 30 && rect.height < 400 && rect.width < 900;
 
-        if (hasReportKeyword && hasTimeFormat && isInMainArea && hasProperSize) {
+        if ((hasReportKeyword || hasTimeFormat) && isInMainArea && hasProperSize) {
           // 親要素と重複しないようにチェック
           const isDuplicate = cards.some(c => text.includes(c.text) || c.text.includes(text));
           if (!isDuplicate) {
