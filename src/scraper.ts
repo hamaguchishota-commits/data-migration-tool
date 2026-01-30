@@ -837,7 +837,7 @@ class KannaScraper {
           if (downloadMenuItem) {
             try {
               const [download] = await Promise.all([
-                this.page.waitForEvent('download', { timeout: 60000 }), // フォルダダウンロードは時間がかかる
+                this.page.waitForEvent('download', { timeout: 120000 }), // フォルダダウンロードは時間がかかる（2分）
                 downloadMenuItem.click(),
               ]);
 
@@ -848,12 +848,72 @@ class KannaScraper {
               folders.push({ name: safeCategoryName, files: [safeFilename] });
               console.log(`      フォルダダウンロード完了: ${safeFilename}`);
             } catch {
-              console.log(`      フォルダダウンロード失敗（タイムアウト）`);
+              console.log(`      フォルダダウンロード失敗（タイムアウト）- フォルダ内の個別ダウンロードを試行`);
               await this.page.keyboard.press('Escape');
+              await sleep(500);
+
+              // フォールバック: フォルダをクリックして中のファイルを個別にダウンロード
+              try {
+                const currentRows2 = await this.page.$$('table tbody tr');
+                if (i < currentRows2.length) {
+                  const folderLink = await currentRows2[i].$('td:first-child a, td:first-child');
+                  if (folderLink) {
+                    await folderLink.click();
+                    await sleep(2000);
+
+                    const categoryDir = path.join(projectDir, safeCategoryName);
+                    if (!fs.existsSync(categoryDir)) {
+                      fs.mkdirSync(categoryDir, { recursive: true });
+                    }
+
+                    const files = await this.downloadFilesFromList(categoryDir);
+                    if (files.length > 0) {
+                      folders.push({ name: safeCategoryName, files });
+                      console.log(`      個別ダウンロード完了: ${files.length} ファイル`);
+                    }
+
+                    // 戻るボタンまたはパンくずで戻る
+                    await this.page.goBack();
+                    await sleep(1000);
+                  }
+                }
+              } catch (fallbackError) {
+                console.log(`      個別ダウンロードも失敗: ${fallbackError}`);
+              }
             }
           } else {
-            console.log(`      ダウンロードメニューが見つかりません`);
+            console.log(`      ダウンロードメニューが見つかりません - フォルダを開いて個別ダウンロード`);
             await this.page.keyboard.press('Escape');
+            await sleep(500);
+
+            // フォルダをクリックして中のファイルを個別にダウンロード
+            try {
+              const currentRows2 = await this.page.$$('table tbody tr');
+              if (i < currentRows2.length) {
+                const folderLink = await currentRows2[i].$('td:first-child a, td:first-child');
+                if (folderLink) {
+                  await folderLink.click();
+                  await sleep(2000);
+
+                  const categoryDir = path.join(projectDir, safeCategoryName);
+                  if (!fs.existsSync(categoryDir)) {
+                    fs.mkdirSync(categoryDir, { recursive: true });
+                  }
+
+                  const files = await this.downloadFilesFromList(categoryDir);
+                  if (files.length > 0) {
+                    folders.push({ name: safeCategoryName, files });
+                    console.log(`      個別ダウンロード完了: ${files.length} ファイル`);
+                  }
+
+                  // 戻るボタンまたはパンくずで戻る
+                  await this.page.goBack();
+                  await sleep(1000);
+                }
+              }
+            } catch (fallbackError) {
+              console.log(`      個別ダウンロードも失敗: ${fallbackError}`);
+            }
           }
         } else {
           console.log(`      メニューボタンが見つかりません`);
@@ -869,6 +929,80 @@ class KannaScraper {
     }
 
     return folders;
+  }
+
+  // フォルダ内のファイルを個別にダウンロード（フォールバック用）
+  private async downloadFilesFromList(dir: string): Promise<string[]> {
+    if (!this.page) return [];
+
+    const downloadedFiles: string[] = [];
+
+    // ファイルリストを取得
+    const fileRows = await this.page.$$('table tbody tr, [class*="list"] [class*="item"], [class*="file-row"], [class*="photo-item"]');
+
+    if (fileRows.length === 0) {
+      console.log(`        ファイルが見つかりません`);
+      return [];
+    }
+
+    console.log(`        ${fileRows.length} 件のファイルを検出`);
+
+    for (let i = 0; i < Math.min(fileRows.length, 50); i++) { // 最大50件まで
+      try {
+        const currentRows = await this.page.$$('table tbody tr, [class*="list"] [class*="item"], [class*="file-row"], [class*="photo-item"]');
+        if (i >= currentRows.length) break;
+
+        const row = currentRows[i];
+
+        // 行にチェックボックスがあれば選択
+        const checkbox = await row.$('input[type="checkbox"]');
+        if (checkbox) {
+          await checkbox.click();
+          continue; // 後でまとめてダウンロード
+        }
+
+        // 行をクリックして詳細を開く
+        await row.click();
+        await sleep(1500);
+
+        // ダウンロードボタンを探す
+        const downloadBtn = await this.page.$('button:has-text("ダウンロード"), a:has-text("ダウンロード"), a[download], [class*="download"]');
+
+        if (downloadBtn) {
+          try {
+            const [download] = await Promise.all([
+              this.page.waitForEvent('download', { timeout: 30000 }),
+              downloadBtn.click(),
+            ]);
+
+            const suggestedName = download.suggestedFilename();
+            const safeFilename = this.sanitizeFilename(suggestedName || `file_${i + 1}`);
+            const filepath = path.join(dir, safeFilename);
+            await download.saveAs(filepath);
+            downloadedFiles.push(safeFilename);
+            console.log(`          [${i + 1}] ${safeFilename}`);
+          } catch {
+            console.log(`          [${i + 1}] ダウンロード失敗`);
+          }
+        }
+
+        // 閉じるボタンまたはESCで戻る
+        const closeBtn = await this.page.$('button:has-text("閉じる"), button[class*="close"], [aria-label="close"]');
+        if (closeBtn) {
+          await closeBtn.click();
+        } else {
+          await this.page.keyboard.press('Escape');
+        }
+        await sleep(500);
+
+      } catch (e) {
+        console.log(`          ファイル処理エラー: ${e}`);
+        await this.page.keyboard.press('Escape');
+        await sleep(300);
+      }
+    }
+
+    return downloadedFiles;
   }
 
   // 資料タブからフォルダ一覧とファイルをダウンロード（KANNA専用）
