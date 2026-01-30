@@ -2075,6 +2075,7 @@ class KannaScraper {
 
     const downloadedFiles: string[] = [];
     const formRows = await this.page.$$('table tbody tr');
+    console.log(`      帳票行数: ${formRows.length}`);
 
     for (let i = 0; i < formRows.length; i++) {
       try {
@@ -2083,47 +2084,73 @@ class KannaScraper {
 
         const row = currentRows[i];
 
-        // ファイル行かどうか確認（入力率%があるのがファイル）
+        // ファイル行かどうか確認（入力率%があるのがファイル、またはExcelボタンがあるのがファイル）
         const rowInfo = await row.evaluate((el) => {
           const cells = el.querySelectorAll('td');
           const hasInputRate = Array.from(cells).some(cell => cell.textContent?.includes('%'));
-          const nameCell = el.querySelector('td:first-child a, td:first-child');
+          const hasExcelBtn = !!el.querySelector('button:not([aria-label])');
+          const nameCell = el.querySelector('td:first-child a, td:first-child span, td:first-child');
           const name = nameCell?.textContent?.trim() || '';
-          return { isFile: hasInputRate, name };
+          return { isFile: hasInputRate || hasExcelBtn, name };
         });
 
-        if (!rowInfo.isFile) continue;
+        if (!rowInfo.isFile || !rowInfo.name) continue;
 
         console.log(`      [${i + 1}] ${rowInfo.name}`);
 
-        // 「...」メニューをクリック
-        const menuBtn = await row.$('td:last-child button, td:last-child [class*="menu"], td:last-child');
+        // 方法1: 直接「Excel」ボタンを探す（行内）
+        const excelBtn = await row.$('button:has-text("Excel"), a:has-text("Excel"), [class*="download"]:has-text("Excel")');
 
-        if (menuBtn) {
-          await menuBtn.click();
-          await sleep(500);
+        if (excelBtn) {
+          console.log(`        Excelボタン発見、クリック中...`);
+          try {
+            const [download] = await Promise.all([
+              this.page.waitForEvent('download', { timeout: 30000 }),
+              excelBtn.click(),
+            ]);
 
-          const downloadMenuItem = await this.page.$('[role="menuitem"]:has-text("Excelをダウンロード"), [role="menu"] :has-text("Excelをダウンロード"), [class*="menu"] :has-text("Excelをダウンロード"), button:has-text("Excelをダウンロード")');
+            const suggestedName = download.suggestedFilename();
+            const safeFilename = this.sanitizeFilename(suggestedName || `${rowInfo.name}.xlsx`);
+            const filepath = path.join(dir, safeFilename);
+            await download.saveAs(filepath);
+            downloadedFiles.push(safeFilename);
+            console.log(`        ダウンロード完了: ${safeFilename}`);
+          } catch (e) {
+            console.log(`        ダウンロード失敗: ${e}`);
+          }
+        } else {
+          // 方法2: 「...」メニューをクリック
+          const menuBtn = await row.$('td:last-child button, td:last-child [class*="menu"]');
 
-          if (downloadMenuItem) {
-            try {
-              const [download] = await Promise.all([
-                this.page.waitForEvent('download', { timeout: 30000 }),
-                downloadMenuItem.click(),
-              ]);
+          if (menuBtn) {
+            await menuBtn.click();
+            await sleep(500);
 
-              const suggestedName = download.suggestedFilename();
-              const safeFilename = this.sanitizeFilename(suggestedName || `${rowInfo.name}.xlsx`);
-              const filepath = path.join(dir, safeFilename);
-              await download.saveAs(filepath);
-              downloadedFiles.push(safeFilename);
-              console.log(`        ダウンロード完了: ${safeFilename}`);
-            } catch {
-              console.log(`        ダウンロード失敗`);
+            const downloadMenuItem = await this.page.$('[role="menuitem"]:has-text("Excel"), [role="menu"] :has-text("Excel"), button:has-text("Excelをダウンロード")');
+
+            if (downloadMenuItem) {
+              try {
+                const [download] = await Promise.all([
+                  this.page.waitForEvent('download', { timeout: 30000 }),
+                  downloadMenuItem.click(),
+                ]);
+
+                const suggestedName = download.suggestedFilename();
+                const safeFilename = this.sanitizeFilename(suggestedName || `${rowInfo.name}.xlsx`);
+                const filepath = path.join(dir, safeFilename);
+                await download.saveAs(filepath);
+                downloadedFiles.push(safeFilename);
+                console.log(`        ダウンロード完了: ${safeFilename}`);
+              } catch {
+                console.log(`        ダウンロード失敗`);
+                await this.page.keyboard.press('Escape');
+              }
+            } else {
+              console.log(`        ダウンロードメニュー見つからず`);
               await this.page.keyboard.press('Escape');
             }
           } else {
-            await this.page.keyboard.press('Escape');
+            console.log(`        ボタン見つからず`);
           }
         }
 
