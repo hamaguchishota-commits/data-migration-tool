@@ -1418,15 +1418,19 @@ class KannaScraper {
         const allDivs = await this.page.$$('div');
         console.log(`        [DEBUG] 全div数: ${allDivs.length}`);
 
+        let bgCount = 0;
         for (const div of allDivs) {
           try {
             const bgImage = await div.evaluate((el) => window.getComputedStyle(el).backgroundImage);
             if (bgImage && bgImage !== 'none' && bgImage.includes('url(')) {
               const box = await div.boundingBox();
+              bgCount++;
+              // デバッグ: 全てのbackground-imageを出力
+              console.log(`        [DEBUG] bg[${bgCount}]: ${box ? `${Math.round(box.width)}x${Math.round(box.height)}` : 'no-box'} ${bgImage.substring(0, 100)}`);
+
               if (box && box.width >= 50 && box.height >= 50) {
-                // storage.googleapis.comやkanna関連のURLを含むか確認
-                if (bgImage.includes('storage') || bgImage.includes('kanna') || bgImage.includes('blob') || bgImage.includes('firebasestorage')) {
-                  console.log(`        [DEBUG] 写真候補発見: ${box.width}x${box.height} bg=${bgImage.substring(0, 80)}...`);
+                // URLフィルタを緩める：アイコンやグラデーション以外を候補に
+                if (!bgImage.includes('icon') && !bgImage.includes('gradient') && !bgImage.includes('data:image/svg')) {
                   clickablePhotos.push(div);
                 }
               }
@@ -1435,6 +1439,7 @@ class KannaScraper {
             // 無視
           }
         }
+        console.log(`        [DEBUG] background-image付きdiv: ${bgCount}件`);
 
         // 通常のimg要素も確認（ただしトラッキングピクセルを除外）
         const allImages: ElementHandle<HTMLImageElement>[] = await this.page.$$('img');
